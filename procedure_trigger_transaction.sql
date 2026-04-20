@@ -1,12 +1,12 @@
--- =========================================================
--- PostgreSQL Utility Script (chuẩn hóa theo ERD.sql)
--- Mục tiêu:
--- 1) Tạo view phục vụ báo cáo demo.
--- 2) Tạo trigger/function nghiệp vụ học tập.
--- 3) Tạo procedure/function tìm kiếm và cập nhật tiến độ.
--- 4) Cung cấp mẫu transaction demo end-to-end (không payment/refund).
+﻿-- =========================================================
+-- PostgreSQL Utility Script (chuáº©n hÃ³a theo ERD.sql)
+-- Má»¥c tiÃªu:
+-- 1) Táº¡o view phá»¥c vá»¥ bÃ¡o cÃ¡o demo.
+-- 2) Táº¡o trigger/function nghiá»‡p vá»¥ há»c táº­p.
+-- 3) Táº¡o procedure/function tÃ¬m kiáº¿m vÃ  cáº­p nháº­t tiáº¿n Ä‘á»™.
+-- 4) Cung cáº¥p máº«u transaction demo end-to-end (khÃ´ng payment/refund).
 --
--- Yêu cầu: chạy ERD.sql trước khi chạy file này.
+-- YÃªu cáº§u: cháº¡y ERD.sql trÆ°á»›c khi cháº¡y file nÃ y.
 -- =========================================================
 
 SET search_path TO public;
@@ -23,90 +23,68 @@ CREATE TABLE IF NOT EXISTS log (
 CREATE INDEX IF NOT EXISTS idx_log_created_at ON log (created_at);
 
 -- =========================================================
--- 1) VIEW BÁO CÁO DEMO
+-- 1) VIEW BÃO CÃO DEMO
 -- =========================================================
 
--- 1.1 Số lượt đăng ký khóa học theo ngày
-CREATE OR REPLACE VIEW vw_enrollments_by_day AS
-SELECT DATE(ce.enrolled_at) AS enroll_day,
-       COUNT(*) AS total_enrollments
-FROM course_enrollments AS ce
-GROUP BY DATE(ce.enrolled_at)
-ORDER BY enroll_day;
+-- 1.1 VIEW BÁO CÁO HỌC TẬP TỔNG QUÁT
+DROP VIEW IF EXISTS vw_enrollments_by_day;
+DROP VIEW IF EXISTS vw_top_courses;
+DROP VIEW IF EXISTS vw_top_active_students;
+DROP VIEW IF EXISTS vw_user_course_progress;
 
--- 1.2 Top khóa học theo số học viên
-CREATE OR REPLACE VIEW vw_top_courses AS
-SELECT gc.course_id,
-       gc.title,
-       gc.visibility_status,
-       COUNT(ce.enrollment_id) AS total_students,
-       COALESCE(ROUND(AVG(ce.progress)::numeric, 2), 0.00)::numeric(5, 2) AS avg_progress
-FROM general_courses AS gc
-LEFT JOIN course_enrollments AS ce
-       ON ce.course_id = gc.course_id
-GROUP BY gc.course_id, gc.title, gc.visibility_status
-ORDER BY total_students DESC, gc.title ASC;
+CREATE OR REPLACE VIEW vw_student_progress_report AS
+SELECT 
+    up.full_name AS student_name,
+    u.email,
+    s.school_name,
+    c.title AS course_title,
+    ce.progress,
+    ce.enrolled_at,
+    CASE 
+        WHEN ce.progress = 100 THEN 'Hoàn thành'
+        WHEN ce.progress > 0 THEN 'Đang học'
+        ELSE 'Mới đăng ký'
+    END AS learning_status
+FROM users u
+JOIN user_profiles up ON u.user_id = up.user_id
+JOIN students s ON u.user_id = s.user_id
+JOIN course_enrollments ce ON s.user_id = ce.student_id
+JOIN general_courses c ON ce.course_id = c.course_id
+WHERE u.is_deleted = FALSE;
 
--- 1.3 Top học viên hoạt động tích cực
--- Điểm hoạt động = trung bình tiến độ + (số bình luận * 5)
-CREATE OR REPLACE VIEW vw_top_active_students AS
-WITH progress_stats AS (
-    SELECT ce.student_id,
-           COUNT(*) AS enrolled_courses,
-           COUNT(*) FILTER (WHERE ce.progress >= 100) AS completed_courses,
-           COALESCE(ROUND(AVG(ce.progress)::numeric, 2), 0.00)::numeric(5, 2) AS avg_progress
-    FROM course_enrollments AS ce
-    GROUP BY ce.student_id
-),
-comment_stats AS (
-    SELECT c.user_id AS student_id,
-           COUNT(*) AS comment_count
-    FROM comments AS c
-    GROUP BY c.user_id
-)
-SELECT s.user_id AS student_id,
-       u.username,
-       up.full_name,
-       COALESCE(ps.enrolled_courses, 0) AS enrolled_courses,
-       COALESCE(ps.completed_courses, 0) AS completed_courses,
-       COALESCE(ps.avg_progress, 0.00)::numeric(5, 2) AS avg_progress,
-       COALESCE(cs.comment_count, 0) AS comment_count,
-       (COALESCE(ps.avg_progress, 0) + COALESCE(cs.comment_count, 0) * 5)::numeric(7, 2) AS activity_score
-FROM students AS s
-JOIN users AS u
-     ON u.user_id = s.user_id
-LEFT JOIN user_profiles AS up
-       ON up.user_id = s.user_id
-LEFT JOIN progress_stats AS ps
-       ON ps.student_id = s.user_id
-LEFT JOIN comment_stats AS cs
-       ON cs.student_id = s.user_id
-ORDER BY activity_score DESC, avg_progress DESC, comment_count DESC, u.username ASC;
+-- 1.2 THỐNG KÊ HIỆU NĂNG KHÓA HỌC
+CREATE OR REPLACE VIEW vw_course_analytics AS
+SELECT 
+    c.course_id,
+    c.title AS course_title,
+    up.full_name AS teacher_name,
+    COUNT(ce.enrollment_id) AS total_students,
+    ROUND(AVG(ce.progress), 2) AS avg_progress,
+    (SELECT ROUND(AVG(rating), 1) FROM user_feedbacks WHERE context LIKE '%' || c.title || '%') AS avg_rating
+FROM general_courses c
+JOIN teachers t ON c.teacher_id = t.user_id
+JOIN user_profiles up ON t.user_id = up.user_id
+LEFT JOIN course_enrollments ce ON c.course_id = ce.course_id
+WHERE c.is_deleted = FALSE
+GROUP BY c.course_id, c.title, up.full_name;
 
--- 1.4 Tiến độ từng học viên theo từng khóa học
-CREATE OR REPLACE VIEW vw_user_course_progress AS
-SELECT ce.student_id,
-       u.username,
-       gc.course_id,
-       gc.title AS course_title,
-       ce.progress,
-       CASE
-           WHEN ce.progress >= 100 THEN 'COMPLETED'
-           WHEN ce.progress > 0 THEN 'IN_PROGRESS'
-           ELSE 'NOT_STARTED'
-       END AS progress_status,
-       ce.enrolled_at
-FROM course_enrollments AS ce
-JOIN users AS u
-     ON u.user_id = ce.student_id
-JOIN general_courses AS gc
-     ON gc.course_id = ce.course_id;
-
+-- 1.3 VIEW HIỂN THỊ BẢNG XẾP HẠNG
+CREATE OR REPLACE VIEW vw_top_learners_leaderboard AS
+SELECT 
+    up.full_name,
+    up.avatar_url,
+    ss.current_streak,
+    ss.highest_streak,
+    (SELECT COUNT(*) FROM user_achievements ua WHERE ua.user_id = s.user_id) AS total_achievements
+FROM students s
+JOIN user_profiles up ON s.user_id = up.user_id
+JOIN student_streaks ss ON s.user_id = ss.student_id
+ORDER BY ss.current_streak DESC, total_achievements DESC;
 -- =========================================================
 -- 2) TRIGGER FUNCTIONS + TRIGGERS
 -- =========================================================
 
--- 2.1 Chạm hoạt động học viên sau khi enroll
+-- 2.1 Cháº¡m hoáº¡t Ä‘á»™ng há»c viÃªn sau khi enroll
 CREATE OR REPLACE FUNCTION fn_touch_student_activity()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -178,7 +156,7 @@ AFTER INSERT ON course_enrollments
 FOR EACH ROW
 EXECUTE FUNCTION fn_touch_student_activity();
 
--- 2.2 Gửi thông báo khi hoàn thành khóa học
+-- 2.2 Gá»­i thÃ´ng bÃ¡o khi hoÃ n thÃ nh khÃ³a há»c
 CREATE OR REPLACE FUNCTION fn_notify_course_completion()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -191,8 +169,8 @@ BEGIN
             message
         )
         SELECT NEW.student_id,
-               'Hoàn thành khóa học',
-               FORMAT('Chúc mừng! Bạn đã hoàn thành khóa học "%s".', gc.title)
+               'HoÃ n thÃ nh khÃ³a há»c',
+               FORMAT('ChÃºc má»«ng! Báº¡n Ä‘Ã£ hoÃ n thÃ nh khÃ³a há»c "%s".', gc.title)
         FROM general_courses AS gc
         WHERE gc.course_id = NEW.course_id;
 
@@ -217,7 +195,7 @@ AFTER UPDATE OF progress ON course_enrollments
 FOR EACH ROW
 WHEN (OLD.progress IS DISTINCT FROM NEW.progress)
 EXECUTE FUNCTION fn_notify_course_completion();
--- 2.3 Cập nhật thẻ updated_at tự động
+-- 2.3 Cáº­p nháº­t tháº» updated_at tá»± Ä‘á»™ng
 CREATE OR REPLACE FUNCTION fn_update_timestamp()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -241,10 +219,10 @@ FOR EACH ROW
 EXECUTE FUNCTION fn_update_timestamp();
 
 -- =========================================================
--- 3) FUNCTIONS/PROCEDURES NGHIỆP VỤ
+-- 3) FUNCTIONS/PROCEDURES NGHIá»†P Vá»¤
 -- =========================================================
 
--- 3.1 Tìm học viên theo từ khóa
+-- 3.1 TÃ¬m há»c viÃªn theo tá»« khÃ³a
 CREATE OR REPLACE FUNCTION fn_search_students(p_keyword TEXT DEFAULT NULL)
 RETURNS TABLE (
     student_id UUID,
@@ -276,7 +254,7 @@ WHERE u.is_deleted = FALSE
 ORDER BY u.created_at DESC;
 $$;
 
--- 3.2 Tìm khóa học nâng cao
+-- 3.2 TÃ¬m khÃ³a há»c nÃ¢ng cao
 CREATE OR REPLACE FUNCTION fn_search_courses_advanced(
     p_keyword TEXT DEFAULT NULL,
     p_category_id INTEGER DEFAULT NULL,
@@ -326,7 +304,7 @@ GROUP BY gc.course_id,
 ORDER BY total_students DESC, gc.title ASC;
 $$;
 
--- 3.3 Procedure enroll học viên vào khóa học
+-- 3.3 Procedure enroll há»c viÃªn vÃ o khÃ³a há»c
 CREATE OR REPLACE PROCEDURE sp_enroll_student(
     p_student_id UUID,
     p_course_id UUID
@@ -335,7 +313,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     IF p_student_id IS NULL OR p_course_id IS NULL THEN
-        RAISE EXCEPTION 'student_id và course_id không được NULL';
+        RAISE EXCEPTION 'student_id vÃ  course_id khÃ´ng Ä‘Æ°á»£c NULL';
     END IF;
 
     IF NOT EXISTS (
@@ -343,7 +321,7 @@ BEGIN
         FROM students
         WHERE user_id = p_student_id
     ) THEN
-        RAISE EXCEPTION 'Không tìm thấy học viên: %', p_student_id;
+        RAISE EXCEPTION 'KhÃ´ng tÃ¬m tháº¥y há»c viÃªn: %', p_student_id;
     END IF;
 
     IF NOT EXISTS (
@@ -351,7 +329,7 @@ BEGIN
         FROM general_courses
         WHERE course_id = p_course_id
     ) THEN
-        RAISE EXCEPTION 'Không tìm thấy khóa học: %', p_course_id;
+        RAISE EXCEPTION 'KhÃ´ng tÃ¬m tháº¥y khÃ³a há»c: %', p_course_id;
     END IF;
 
     INSERT INTO course_enrollments (
@@ -367,7 +345,7 @@ BEGIN
     ON CONFLICT (student_id, course_id) DO NOTHING;
 
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Học viên % đã đăng ký khóa học % trước đó', p_student_id, p_course_id;
+        RAISE EXCEPTION 'Há»c viÃªn % Ä‘Ã£ Ä‘Äƒng kÃ½ khÃ³a há»c % trÆ°á»›c Ä‘Ã³', p_student_id, p_course_id;
     END IF;
 
     INSERT INTO log (action)
@@ -381,7 +359,7 @@ BEGIN
 END;
 $$;
 
--- 3.4 Procedure cập nhật tiến độ học
+-- 3.4 Procedure cáº­p nháº­t tiáº¿n Ä‘á»™ há»c
 CREATE OR REPLACE PROCEDURE sp_update_course_progress(
     p_student_id UUID,
     p_course_id UUID,
@@ -391,11 +369,11 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     IF p_student_id IS NULL OR p_course_id IS NULL THEN
-        RAISE EXCEPTION 'student_id và course_id không được NULL';
+        RAISE EXCEPTION 'student_id vÃ  course_id khÃ´ng Ä‘Æ°á»£c NULL';
     END IF;
 
     IF p_progress IS NULL OR p_progress < 0 OR p_progress > 100 THEN
-        RAISE EXCEPTION 'progress phải nằm trong khoảng 0..100, nhận: %', p_progress;
+        RAISE EXCEPTION 'progress pháº£i náº±m trong khoáº£ng 0..100, nháº­n: %', p_progress;
     END IF;
 
     UPDATE course_enrollments
@@ -405,7 +383,7 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION
-            'Không tìm thấy enrollment cho student_id=% và course_id=%',
+            'KhÃ´ng tÃ¬m tháº¥y enrollment cho student_id=% vÃ  course_id=%',
             p_student_id,
             p_course_id;
     END IF;
@@ -421,7 +399,7 @@ BEGIN
     );
 END;
 $$;
--- 3.5 Procedure Xóa mềm Tài khoản (Học viên/Giáo viên)
+-- 3.5 Procedure XÃ³a má»m TÃ i khoáº£n (Há»c viÃªn/GiÃ¡o viÃªn)
 CREATE OR REPLACE PROCEDURE sp_soft_delete_user(
     p_user_id UUID
 )
@@ -433,7 +411,7 @@ BEGIN
     WHERE user_id = p_user_id;
 
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Không tìm thấy user_id: %', p_user_id;
+        RAISE EXCEPTION 'KhÃ´ng tÃ¬m tháº¥y user_id: %', p_user_id;
     END IF;
 
     INSERT INTO log (action)
@@ -443,7 +421,7 @@ BEGIN
 END;
 $$;
 
--- 3.6 Procedure Xóa mềm Khóa học
+-- 3.6 Procedure XÃ³a má»m KhÃ³a há»c
 CREATE OR REPLACE PROCEDURE sp_soft_delete_course(
     p_course_id UUID
 )
@@ -455,7 +433,7 @@ BEGIN
     WHERE course_id = p_course_id;
 
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Không tìm thấy course_id: %', p_course_id;
+        RAISE EXCEPTION 'KhÃ´ng tÃ¬m tháº¥y course_id: %', p_course_id;
     END IF;
 
     INSERT INTO log (action)
@@ -466,14 +444,14 @@ END;
 $$;
 
 -- =========================================================
--- 4) MẪU TRANSACTION DEMO (END-TO-END)
+-- 4) MáºªU TRANSACTION DEMO (END-TO-END)
 -- =========================================================
--- Lưu ý:
--- - Đây là mẫu chạy tay cho buổi demo.
--- - Cần có dữ liệu tối thiểu trong users/students/teachers/general_courses/general_course_lessons.
--- - Thay UUID theo dữ liệu thực tế của bạn trước khi chạy.
+-- LÆ°u Ã½:
+-- - ÄÃ¢y lÃ  máº«u cháº¡y tay cho buá»•i demo.
+-- - Cáº§n cÃ³ dá»¯ liá»‡u tá»‘i thiá»ƒu trong users/students/teachers/general_courses/general_course_lessons.
+-- - Thay UUID theo dá»¯ liá»‡u thá»±c táº¿ cá»§a báº¡n trÆ°á»›c khi cháº¡y.
 
--- 4.1 Transaction enroll học viên vào khóa học
+-- 4.1 Transaction enroll há»c viÃªn vÃ o khÃ³a há»c
 -- BEGIN;
 -- CALL sp_enroll_student(
 --     '00000000-0000-0000-0000-000000000101'::uuid, -- p_student_id
@@ -481,7 +459,7 @@ $$;
 -- );`
 -- COMMIT;
 
--- 4.2 Transaction cập nhật tiến độ + tạo bình luận để mô phỏng hoạt động học tập
+-- 4.2 Transaction cáº­p nháº­t tiáº¿n Ä‘á»™ + táº¡o bÃ¬nh luáº­n Ä‘á»ƒ mÃ´ phá»ng hoáº¡t Ä‘á»™ng há»c táº­p
 -- BEGIN;
 -- CALL sp_update_course_progress(
 --     '00000000-0000-0000-0000-000000000101'::uuid, -- p_student_id
@@ -497,15 +475,26 @@ $$;
 -- VALUES (
 --     '00000000-0000-0000-0000-000000000301'::uuid, -- lesson_id
 --     '00000000-0000-0000-0000-000000000101'::uuid, -- user_id (student)
---     'Bài học rất dễ hiểu, mình đã hoàn thành khóa học.'
+--     'BÃ i há»c ráº¥t dá»… hiá»ƒu, mÃ¬nh Ä‘Ã£ hoÃ n thÃ nh khÃ³a há»c.'
 -- );
 -- COMMIT;
 
 -- =========================================================
--- 5) TRUY VẤN NHANH PHỤC VỤ BÁO CÁO
+-- 5) TRUY Váº¤N NHANH PHá»¤C Vá»¤ BÃO CÃO
 -- =========================================================
--- SELECT * FROM vw_enrollments_by_day;
--- SELECT * FROM vw_top_courses;
--- SELECT * FROM vw_top_active_students;
--- SELECT * FROM vw_user_course_progress;
+-- SELECT course_title, progress, learning_status 
+-- FROM vw_student_progress_report
+-- WHERE email = 'minh.student@signlearn.local'
+-- ORDER BY progress DESC;
+--
+-- SELECT course_title, total_students, avg_rating
+-- FROM vw_course_analytics
+-- WHERE avg_rating >= 4.0 
+--   AND teacher_name = 'Nguyen Thi Lan';
+--
+-- SELECT full_name, current_streak, total_achievements
+-- FROM vw_top_learners_leaderboard
+-- ORDER BY current_streak DESC, total_achievements DESC
+-- LIMIT 5;
 -- SELECT action, created_at FROM log ORDER BY created_at DESC LIMIT 20;
+
