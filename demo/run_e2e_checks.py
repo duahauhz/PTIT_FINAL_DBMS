@@ -131,6 +131,8 @@ def choose_payloads(init_data: Dict[str, Any]) -> Dict[str, Any]:
     enrollments = init_data["tables"]["course_enrollments"]
 
     existing_pairs = {(row["student_id"], row["course_id"]) for row in enrollments}
+    active_course_ids = {row["course_id"] for row in courses}
+    active_student_ids = {row["user_id"] for row in students}
     enroll_pair = None
     for student in students:
         for course in courses:
@@ -145,6 +147,8 @@ def choose_payloads(init_data: Dict[str, Any]) -> Dict[str, Any]:
 
     progress_target = None
     for row in enrollments:
+        if row["course_id"] not in active_course_ids or row["student_id"] not in active_student_ids:
+            continue
         try:
             progress = float(row["progress"])
         except Exception:
@@ -152,6 +156,11 @@ def choose_payloads(init_data: Dict[str, Any]) -> Dict[str, Any]:
         if progress < 100.0:
             progress_target = row
             break
+    if not progress_target:
+        for row in enrollments:
+            if row["course_id"] in active_course_ids and row["student_id"] in active_student_ids:
+                progress_target = row
+                break
     if not progress_target:
         progress_target = enrollments[0]
 
@@ -323,6 +332,30 @@ def main() -> int:
             return 2
 
         payloads = choose_payloads(init_data)
+        baseline_table_counts = {
+            "course_enrollments": len(init_data.get("tables", {}).get("course_enrollments", [])),
+            "comments": len(init_data.get("tables", {}).get("comments", [])),
+            "notification_users": len(init_data.get("tables", {}).get("notification_users", [])),
+            "student_streaks": len(init_data.get("tables", {}).get("student_streaks", [])),
+        }
+        expected_view_keys = {
+            "vw_student_progress_report",
+            "vw_course_analytics",
+            "vw_top_learners_leaderboard",
+        }
+        legacy_view_keys = {
+            "vw_enrollments_by_day",
+            "vw_top_courses",
+            "vw_top_active_students",
+            "vw_user_course_progress",
+        }
+
+        init_views = init_data.get("views") or {}
+        init_view_keys = set(init_views.keys())
+        init_ok = (init_view_keys == expected_view_keys) and not bool(init_view_keys & legacy_view_keys)
+        init_detail = f"init_views={sorted(init_view_keys)}"
+        rows.append(("init_views_contract", init_ok, init_detail))
+        print(f"[{'PASS' if init_ok else 'FAIL'}] init_views_contract: {init_detail}", flush=True)
 
         def readonly_check(_events, result):
             step = trace_step(result, "check_trigger_side_effects")
@@ -331,7 +364,17 @@ def main() -> int:
             mutated = step.get("details", {}).get("mutated")
             return mutated is False, f"mutated={mutated}"
 
-        run_case("view_reports_readonly", "view_reports", {}, True, rows, readonly_check)
+        def view_reports_check(events, result):
+            ok_readonly, detail_readonly = readonly_check(events, result)
+            report_views = (result.get("action_data", {}) or {}).get("report_views", {}) or {}
+            keys = set(report_views.keys())
+            has_exact_keys = keys == expected_view_keys
+            has_legacy = bool(keys & legacy_view_keys)
+            ok = ok_readonly and has_exact_keys and not has_legacy
+            detail = f"{detail_readonly}; keys={sorted(keys)}"
+            return ok, detail
+
+        run_case("view_reports_readonly", "view_reports", {}, True, rows, view_reports_check)
         run_case("search_students_readonly", "search_students", {"keyword": payloads["search_keyword"]}, True, rows, readonly_check)
         run_case("search_courses_readonly", "search_courses", {"keyword": "", "category_id": "", "status": ""}, True, rows, readonly_check)
 
@@ -349,8 +392,15 @@ def main() -> int:
             c2 = len(tables_after.get("comments", []))
             c3 = len(tables_after.get("notification_users", []))
             c4 = len(tables_after.get("student_streaks", []))
-            ok = (c1, c2, c3, c4) == (6, 5, 3, 3)
-            return ok, f"counts={c1}/{c2}/{c3}/{c4}"
+            expected = (
+                baseline_table_counts["course_enrollments"],
+                baseline_table_counts["comments"],
+                baseline_table_counts["notification_users"],
+                baseline_table_counts["student_streaks"],
+            )
+            actual = (c1, c2, c3, c4)
+            ok = actual == expected
+            return ok, f"counts={actual} expected={expected}"
 
         run_case("reset_after_enroll", "reset", {}, True, rows, reset_count_check)
 

@@ -67,6 +67,43 @@ def get_db_connection() -> psycopg.Connection:
     return conn
 
 
+# Ghi audit log bằng kết nối riêng để không bị mất khi transaction chính rollback.
+def write_audit_log(
+    run_id: str,
+    action: str,
+    status: str,
+    error_message: Optional[str] = None,
+) -> None:
+    normalized_status = (status or "").strip().upper()
+    if normalized_status not in {"SUCCESS", "FAILED", "ROLLED_BACK"}:
+        normalized_status = "FAILED"
+
+    try:
+        with get_db_connection() as audit_conn:
+            with audit_conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO audit_logs (
+                        run_id,
+                        action,
+                        status,
+                        error_message
+                    )
+                    VALUES (
+                        %s::uuid,
+                        %s,
+                        %s,
+                        %s
+                    )
+                    """,
+                    (run_id, action, normalized_status, error_message),
+                )
+            audit_conn.commit()
+    except Exception:
+        # Khong lam fail luong chinh neu audit log gap loi.
+        pass
+
+
 # Tải dữ liệu lookup cho dropdown.
 def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     with conn.cursor() as cur:
@@ -267,29 +304,25 @@ def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, An
     }
 
 
-# Đọc dữ liệu từ 4 view báo cáo.
+# Đọc dữ liệu từ 3 view báo cáo.
 def fetch_reporting_views(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     queries = {
-        "vw_enrollments_by_day": """
+        "vw_student_progress_report": """
             SELECT *
-            FROM vw_enrollments_by_day
-            ORDER BY enroll_day DESC
+            FROM vw_student_progress_report
+            ORDER BY enrolled_at DESC, progress DESC, student_name ASC
             LIMIT 40
         """,
-        "vw_top_courses": """
+        "vw_course_analytics": """
             SELECT *
-            FROM vw_top_courses
+            FROM vw_course_analytics
+            ORDER BY total_students DESC, avg_progress DESC, course_title ASC
             LIMIT 40
         """,
-        "vw_top_active_students": """
+        "vw_top_learners_leaderboard": """
             SELECT *
-            FROM vw_top_active_students
-            LIMIT 40
-        """,
-        "vw_user_course_progress": """
-            SELECT *
-            FROM vw_user_course_progress
-            ORDER BY enrolled_at DESC
+            FROM vw_top_learners_leaderboard
+            ORDER BY current_streak DESC, total_achievements DESC, full_name ASC
             LIMIT 40
         """,
     }
@@ -944,10 +977,14 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="SELECT tu vw_top_courses, vw_top_active_students",
+        sql_label="SELECT tu 3 reporting views moi",
         sql_lines=[
-            f"SELECT * FROM vw_top_courses LIMIT 10;",
-            f"SELECT * FROM vw_top_active_students LIMIT 10;",
+            f"SELECT student_name, course_title, progress, learning_status",
+            f"  FROM vw_student_progress_report ORDER BY enrolled_at DESC LIMIT 10;",
+            f"SELECT course_title, total_students, avg_progress, avg_rating",
+            f"  FROM vw_course_analytics ORDER BY total_students DESC LIMIT 10;",
+            f"SELECT full_name, current_streak, total_achievements",
+            f"  FROM vw_top_learners_leaderboard LIMIT 10;",
         ],
         fn=step_refresh_views,
     )
@@ -1174,10 +1211,14 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="SELECT tu vw_user_course_progress",
+        sql_label="SELECT tu 3 reporting views moi",
         sql_lines=[
-            f"SELECT student_id, course_title, progress, progress_status",
-            f"  FROM vw_user_course_progress WHERE student_id = '{sid}'::uuid ORDER BY enrolled_at DESC;",
+            f"SELECT student_name, course_title, progress, learning_status",
+            f"  FROM vw_student_progress_report ORDER BY enrolled_at DESC LIMIT 10;",
+            f"SELECT course_title, total_students, avg_progress, avg_rating",
+            f"  FROM vw_course_analytics ORDER BY total_students DESC LIMIT 10;",
+            f"SELECT full_name, current_streak, total_achievements",
+            f"  FROM vw_top_learners_leaderboard LIMIT 10;",
         ],
         fn=step_refresh_views,
     )
@@ -1191,7 +1232,7 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
     )
 
 
-# Kịch bản: đọc 4 reporting view.
+# Kịch bản: đọc 3 reporting view.
 def run_view_reports_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     def step_validate() -> Dict[str, Any]:
         context["fingerprint_before"] = fetch_mutation_fingerprint(conn)
@@ -1239,7 +1280,7 @@ def run_view_reports_pipeline(run: RunState, conn: psycopg.Connection, context: 
         step_index=2,
         step_key="execute_procedure",
         step_name="Execute reporting query",
-        sql_label="SELECT * FROM 4 reporting views",
+        sql_label="SELECT * FROM 3 reporting views",
         fn=step_execute,
     )
     execute_step(
@@ -1263,7 +1304,7 @@ def run_view_reports_pipeline(run: RunState, conn: psycopg.Connection, context: 
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="Reload 4 reporting views",
+        sql_label="Reload 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -1383,7 +1424,7 @@ def run_search_students_pipeline(run: RunState, conn: psycopg.Connection, contex
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="Reload 4 reporting views",
+        sql_label="Reload 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -1504,7 +1545,7 @@ def run_search_courses_pipeline(run: RunState, conn: psycopg.Connection, context
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="Reload 4 reporting views",
+        sql_label="Reload 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -1692,7 +1733,7 @@ def run_update_progress_pipeline(run: RunState, conn: psycopg.Connection, contex
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="Reload 4 reporting views",
+        sql_label="Reload 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -1849,7 +1890,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="Reload 4 reporting views",
+        sql_label="Reload 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -2005,7 +2046,7 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="Reload 4 reporting views",
+        sql_label="Reload 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -2097,7 +2138,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="SELECT snapshot từ 4 reporting views",
+        sql_label="SELECT snapshot từ 3 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -2169,8 +2210,29 @@ def run_worker(run: RunState) -> None:
                 "action_data": context.get("action_data", {}),
             }
             ok = True
+            write_audit_log(
+                run_id=run.run_id,
+                action=run.action,
+                status="SUCCESS",
+                error_message=None,
+            )
     except Exception as exc:
         error_message = str(exc)
+        rollback_actions = {
+            "enroll",
+            "update_progress",
+            "progress_comment",
+            "soft_delete_user",
+            "soft_delete_course",
+            "reset",
+        }
+        failure_status = "ROLLED_BACK" if run.action in rollback_actions else "FAILED"
+        write_audit_log(
+            run_id=run.run_id,
+            action=run.action,
+            status=failure_status,
+            error_message=error_message,
+        )
         result = {
             "ok": False,
             "message": error_message,
@@ -2326,6 +2388,7 @@ if __name__ == "__main__":
         debug=False,
         threaded=True,
     )
+
 
 
 

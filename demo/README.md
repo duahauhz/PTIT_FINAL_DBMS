@@ -14,7 +14,7 @@ Frontend nhận tiến độ từng bước qua SSE (`EventSource`) và hiển t
 ## Kịch bản trong giao diện
 Giao diện chia thành 8 kịch bản riêng đúng theo `procedure_trigger_transaction.sql`:
 
-1. View reports (4 views)
+1. View reports (3 views)
 2. Function `fn_search_students`
 3. Function `fn_search_courses_advanced`
 4. Procedure `sp_enroll_student`

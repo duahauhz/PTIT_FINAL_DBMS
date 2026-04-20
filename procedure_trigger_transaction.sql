@@ -12,6 +12,17 @@
 SET search_path TO public;
 
 -- =========================================================
+-- 0) ENTITY LOG HE THONG
+-- =========================================================
+CREATE TABLE IF NOT EXISTS log (
+    log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    action TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_log_created_at ON log (created_at);
+
+-- =========================================================
 -- 1) VIEW BÁO CÁO DEMO
 -- =========================================================
 
@@ -123,6 +134,14 @@ BEGIN
             1,
             CURRENT_DATE
         );
+        INSERT INTO log (action)
+        VALUES (
+            FORMAT(
+                'trg_touch_student_activity_on_enroll: student_id=%s, current_streak=%s',
+                NEW.student_id,
+                1
+            )
+        );
         RETURN NEW;
     END IF;
 
@@ -139,6 +158,15 @@ BEGIN
         highest_streak = GREATEST(v_prev_streak.highest_streak, v_new_streak),
         last_activity_date = CURRENT_DATE
     WHERE student_id = NEW.student_id;
+
+    INSERT INTO log (action)
+    VALUES (
+        FORMAT(
+            'trg_touch_student_activity_on_enroll: student_id=%s, current_streak=%s',
+            NEW.student_id,
+            v_new_streak
+        )
+    );
 
     RETURN NEW;
 END;
@@ -167,6 +195,16 @@ BEGIN
                FORMAT('Chúc mừng! Bạn đã hoàn thành khóa học "%s".', gc.title)
         FROM general_courses AS gc
         WHERE gc.course_id = NEW.course_id;
+
+        INSERT INTO log (action)
+        VALUES (
+            FORMAT(
+                'trg_notify_course_completion: student_id=%s, course_id=%s, progress=%s',
+                NEW.student_id,
+                NEW.course_id,
+                NEW.progress
+            )
+        );
     END IF;
 
     RETURN NEW;
@@ -331,6 +369,15 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Học viên % đã đăng ký khóa học % trước đó', p_student_id, p_course_id;
     END IF;
+
+    INSERT INTO log (action)
+    VALUES (
+        FORMAT(
+            'sp_enroll_student: student_id=%s, course_id=%s',
+            p_student_id,
+            p_course_id
+        )
+    );
 END;
 $$;
 
@@ -362,6 +409,16 @@ BEGIN
             p_student_id,
             p_course_id;
     END IF;
+
+    INSERT INTO log (action)
+    VALUES (
+        FORMAT(
+            'sp_update_course_progress: student_id=%s, course_id=%s, progress=%s',
+            p_student_id,
+            p_course_id,
+            ROUND(p_progress, 2)
+        )
+    );
 END;
 $$;
 -- 3.5 Procedure Xóa mềm Tài khoản (Học viên/Giáo viên)
@@ -378,6 +435,11 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Không tìm thấy user_id: %', p_user_id;
     END IF;
+
+    INSERT INTO log (action)
+    VALUES (
+        FORMAT('sp_soft_delete_user: user_id=%s', p_user_id)
+    );
 END;
 $$;
 
@@ -395,6 +457,11 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Không tìm thấy course_id: %', p_course_id;
     END IF;
+
+    INSERT INTO log (action)
+    VALUES (
+        FORMAT('sp_soft_delete_course: course_id=%s', p_course_id)
+    );
 END;
 $$;
 
@@ -411,7 +478,7 @@ $$;
 -- CALL sp_enroll_student(
 --     '00000000-0000-0000-0000-000000000101'::uuid, -- p_student_id
 --     '00000000-0000-0000-0000-000000000201'::uuid  -- p_course_id
--- );
+-- );`
 -- COMMIT;
 
 -- 4.2 Transaction cập nhật tiến độ + tạo bình luận để mô phỏng hoạt động học tập
@@ -441,3 +508,4 @@ $$;
 -- SELECT * FROM vw_top_courses;
 -- SELECT * FROM vw_top_active_students;
 -- SELECT * FROM vw_user_course_progress;
+-- SELECT action, created_at FROM log ORDER BY created_at DESC LIMIT 20;

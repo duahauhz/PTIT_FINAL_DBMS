@@ -31,10 +31,9 @@ const ROW_KEY_FIELDS = {
   comments: ['comment_id'],
   users: ['user_id'],
   general_courses: ['course_id'],
-  vw_enrollments_by_day: ['enroll_day'],
-  vw_top_courses: ['course_id'],
-  vw_top_active_students: ['student_id'],
-  vw_user_course_progress: ['student_id', 'course_id'],
+  vw_student_progress_report: ['email', 'course_title', 'enrolled_at'],
+  vw_course_analytics: ['course_id'],
+  vw_top_learners_leaderboard: ['full_name', 'avatar_url'],
 };
 
 let currentRunId = null;
@@ -633,7 +632,7 @@ async function loadResult(runId, relevantTables) {
 
     if (ad.report_views) {
       termWrite('', 'info');
-      termWrite('── Ket qua 4 reporting views ──', 'sql-string');
+      termWrite('── Ket qua 3 reporting views ──', 'sql-string');
       Object.entries(ad.report_views).forEach(([viewName, rows]) => {
         termWrite(`  ${viewName}: ${(rows || []).length} rows`, 'sql-comment');
       });
