@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sơ đồ ERD - PTIT Final DBMS</title>
+    <!-- Thư viện vẽ sơ đồ -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <!-- Thư viện Zoom In/Out xịn xò -->
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom/dist/svg-pan-zoom.min.js"></script>
+    <style>
+        body { 
+            background-color: #ffffff; /* ÉP NỀN TRẮNG TINH */
+            margin: 0; padding: 0; 
+            height: 100vh; display: flex; flex-direction: column; 
+            font-family: sans-serif;
+        }
+        .mermaid { 
+            background-color: #ffffff; 
+            flex-grow: 1; overflow: hidden; 
+            display: flex; justify-content: center; align-items: center; 
+        }
+        svg { max-width: 100%; max-height: 100%; object-fit: contain; }
+        #controls { 
+            padding: 15px; 
+            background: #2b2b2b; color: white;
+            border-bottom: 2px solid #ccc; text-align: center; 
+            font-weight: bold; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        🚀 Trình xem Sơ đồ ERD Chuyên nghiệp - (Nền Trắng - Nét Đen)<br>
+        <span style="font-size: 14px; font-weight: normal; color: #ffeb3b;">📌 Lăn chuột (Scroll) để Phóng to/Thu nhỏ tới vô cực --- Nhấn giữ chuột trái để Kéo (Pan) đi mọi nơi --- Dùng tổ hợp Win + Shift + S để chụp vùng muốn cho vào Word!</span>
+    </div>
+    <div class="mermaid" id="diagram">
+%%{init: {'theme': 'default', 'themeVariables': { 'primaryColor': '#ffffff', 'lineColor': '#000000', 'textColor': '#000000'}}}%%
+erDiagram
+    %% Module Users
+    roles ||--o{ users : "1:N (role_id)"
+    users ||--|| user_profiles : "1:1 (user_id)"
+    users ||--|| students : "1:1 (user_id)"
+    users ||--|| teachers : "1:1 (user_id)"
+    users ||--o{ authentication_sessions : "1:N (user_id)"
+
+    %% Module Dictionary
+    dictionary_categories ||--o{ dictionary_entries : "1:N (category_id)"
+    dictionary_entries ||--o{ dictionary_variations : "1:N (entry_id)"
+
+    %% Module General Courses
+    teachers ||--o{ general_courses : "1:N (teacher_id)"
+    general_course_categories ||--o{ general_courses : "1:N (category_id)"
+    general_courses ||--o{ general_course_modules : "1:N (course_id)"
+    general_course_modules ||--o{ general_course_lessons : "1:N (module_id)"
+    general_course_lessons ||--o{ learning_materials : "1:N (lesson_id)"
+    general_courses ||--o{ course_enrollments : "1:N (course_id)"
+    students ||--o{ course_enrollments : "1:N (student_id)"
+    general_course_lessons ||--o{ comments : "1:N (lesson_id)"
+    users ||--o{ comments : "1:N (user_id)"
+
+    %% Module Microlearning
+    microlearning_topics ||--o{ microlearning_units : "1:N (topic_id)"
+    microlearning_units ||--o{ microlearning_lessons : "1:N (unit_id)"
+    microlearning_lessons ||--o{ microlearning_lesson_parts : "1:N (lesson_id)"
+    microlearning_lesson_parts ||--o{ microlearning_questions : "1:N (part_id)"
+
+    %% Module Gamification & Interactions
+    students ||--|| student_streaks : "1:1 (student_id)"
+    users ||--o{ user_achievements : "1:N (user_id)"
+    achievements ||--o{ user_achievements : "1:N (achievement_id)"
+    users ||--o{ user_feedbacks : "1:N (user_id)"
+    users ||--o{ notification_users : "1:N (user_id)"
+    </div>
+    
+    <script>
+        // Cấu hình vẽ với nền trắng, nét đen đậm rõ
+        mermaid.initialize({ startOnLoad: true, theme: 'default' });
+        
+        // Đợi 1 giây cho đồ thị vẽ xong để chèn chức năng Zoom
+        setTimeout(() => {
+            const svgElement = document.querySelector('.mermaid svg');
+            if (svgElement) {
+                svgElement.setAttribute('width', '100%');
+                svgElement.setAttribute('height', '100%');
+                // Gắn bộ engine Zoom chuyên nghiệp
+                svgPanZoom(svgElement, {
+                    zoomEnabled: true,
+                    controlIconsEnabled: true,
+                    fit: true,
+                    center: true,
+                    minZoom: 0.1,
+                    maxZoom: 50 // Cho phép zoom gấp 50 lần không vỡ
+                });
+            }
+        }, 1500); 
+    </script>
+</body>
+</html>
