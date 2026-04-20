@@ -1,10 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
 import threading
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -15,6 +16,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory, stream
 from psycopg.rows import dict_row
 
 
+# Đọc biến môi trường từ file .env cục bộ.
 def load_local_env(env_path: str) -> None:
     if not os.path.exists(env_path):
         return
@@ -30,10 +32,12 @@ def load_local_env(env_path: str) -> None:
                 os.environ[key] = value
 
 
+# Lấy thời gian UTC dạng ISO.
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Đổi dữ liệu DB sang kiểu JSON an toàn.
 def to_jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: to_jsonable(v) for k, v in value.items()}
@@ -44,6 +48,7 @@ def to_jsonable(value: Any) -> Any:
     return value
 
 
+# Mở kết nối PostgreSQL theo biến môi trường.
 def get_db_connection() -> psycopg.Connection:
     database_url = os.getenv("DATABASE_URL")
     if database_url:
@@ -62,6 +67,7 @@ def get_db_connection() -> psycopg.Connection:
     return conn
 
 
+# Tải dữ liệu lookup cho dropdown.
 def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     with conn.cursor() as cur:
         cur.execute(
@@ -144,6 +150,7 @@ def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]
     }
 
 
+# Tải snapshot các bảng nguồn để so sánh trước/sau.
 def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     with conn.cursor() as cur:
         cur.execute(
@@ -220,14 +227,47 @@ def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, An
         )
         comments = cur.fetchall()
 
+        cur.execute(
+            """
+            SELECT u.user_id,
+                   u.username,
+                   r.role_name,
+                   u.is_deleted,
+                   u.updated_at
+            FROM users AS u
+            JOIN roles AS r
+                 ON r.role_id = u.role_id
+            ORDER BY u.updated_at DESC, u.username ASC
+            LIMIT 40
+            """
+        )
+        users = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT gc.course_id,
+                   gc.title,
+                   gc.visibility_status,
+                   gc.is_deleted,
+                   gc.updated_at
+            FROM general_courses AS gc
+            ORDER BY gc.updated_at DESC, gc.title ASC
+            LIMIT 40
+            """
+        )
+        courses = cur.fetchall()
+
     return {
         "course_enrollments": enrollments,
         "student_streaks": streaks,
         "notification_users": notifications,
         "comments": comments,
+        "users": users,
+        "general_courses": courses,
     }
 
 
+# Đọc dữ liệu từ 4 view báo cáo.
 def fetch_reporting_views(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     queries = {
         "vw_enrollments_by_day": """
@@ -277,15 +317,17 @@ def fetch_reporting_views(conn: psycopg.Connection) -> Dict[str, List[Dict[str, 
     return result
 
 
+# Kiểm tra chuỗi UUID đầu vào.
 def validate_uuid(raw_value: Any, field_name: str) -> str:
     if raw_value is None:
-        raise ValueError(f"Thiáº¿u trÆ°á»ng báº¯t buá»™c: {field_name}.")
+        raise ValueError(f"Thiếu trường bắt buộc: {field_name}.")
     try:
         return str(uuid.UUID(str(raw_value)))
     except ValueError as exc:
-        raise ValueError(f"{field_name} pháº£i lÃ  UUID há»£p lá»‡.") from exc
+        raise ValueError(f"{field_name} phải là UUID hợp lệ.") from exc
 
 
+# Chạy query trả về đúng 1 giá trị.
 def run_query_value(conn: psycopg.Connection, sql: str, params: tuple[Any, ...]) -> Any:
     with conn.cursor() as cur:
         cur.execute(sql, params)
@@ -293,6 +335,7 @@ def run_query_value(conn: psycopg.Connection, sql: str, params: tuple[Any, ...])
     return None if row is None else next(iter(row.values()))
 
 
+# Lấy dấu vân tay dữ liệu để check có mutate hay không.
 def fetch_mutation_fingerprint(conn: psycopg.Connection) -> Dict[str, int]:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS total FROM course_enrollments")
@@ -406,6 +449,7 @@ ACTION_ALIASES = {
 }
 
 
+# Chuẩn hóa tên action từ client.
 def normalize_action(raw_action: Any) -> str:
     if not isinstance(raw_action, str):
         return ""
@@ -415,307 +459,220 @@ def normalize_action(raw_action: Any) -> str:
     return ACTION_ALIASES.get(action, action)
 
 
-BASELINE_ENROLLMENTS = [
-    {
-        "enrollment_id": "50000000-0000-0000-0000-000000000001",
-        "student_id": "30000000-0000-0000-0000-000000000001",
-        "course_id": "40000000-0000-0000-0000-000000000001",
-        "progress": Decimal("100.00"),
-        "offset": "10 days",
-    },
-    {
-        "enrollment_id": "50000000-0000-0000-0000-000000000002",
-        "student_id": "30000000-0000-0000-0000-000000000001",
-        "course_id": "40000000-0000-0000-0000-000000000002",
-        "progress": Decimal("65.50"),
-        "offset": "8 days",
-    },
-    {
-        "enrollment_id": "50000000-0000-0000-0000-000000000003",
-        "student_id": "30000000-0000-0000-0000-000000000002",
-        "course_id": "40000000-0000-0000-0000-000000000001",
-        "progress": Decimal("80.00"),
-        "offset": "7 days",
-    },
-    {
-        "enrollment_id": "50000000-0000-0000-0000-000000000004",
-        "student_id": "30000000-0000-0000-0000-000000000002",
-        "course_id": "40000000-0000-0000-0000-000000000002",
-        "progress": Decimal("35.00"),
-        "offset": "6 days",
-    },
-    {
-        "enrollment_id": "50000000-0000-0000-0000-000000000005",
-        "student_id": "30000000-0000-0000-0000-000000000003",
-        "course_id": "40000000-0000-0000-0000-000000000001",
-        "progress": Decimal("20.00"),
-        "offset": "5 days",
-    },
-    {
-        "enrollment_id": "50000000-0000-0000-0000-000000000006",
-        "student_id": "30000000-0000-0000-0000-000000000003",
-        "course_id": "40000000-0000-0000-0000-000000000003",
-        "progress": Decimal("10.00"),
-        "offset": "3 days",
-    },
-]
-
-BASELINE_COMMENTS = [
-    {
-        "comment_id": "51000000-0000-0000-0000-000000000001",
-        "lesson_id": "42000000-0000-0000-0000-000000000001",
-        "user_id": "30000000-0000-0000-0000-000000000001",
-        "content": "Em hoc chu cai rat de hieu.",
-        "offset": "9 days",
-    },
-    {
-        "comment_id": "51000000-0000-0000-0000-000000000002",
-        "lesson_id": "42000000-0000-0000-0000-000000000003",
-        "user_id": "30000000-0000-0000-0000-000000000001",
-        "content": "Phan chao hoi rat huu ich.",
-        "offset": "7 days",
-    },
-    {
-        "comment_id": "51000000-0000-0000-0000-000000000003",
-        "lesson_id": "42000000-0000-0000-0000-000000000004",
-        "user_id": "30000000-0000-0000-0000-000000000002",
-        "content": "Bai hoi dap can them vi du.",
-        "offset": "5 days",
-    },
-    {
-        "comment_id": "51000000-0000-0000-0000-000000000004",
-        "lesson_id": "42000000-0000-0000-0000-000000000005",
-        "user_id": "30000000-0000-0000-0000-000000000003",
-        "content": "Em da luyen tap voi nhom ban.",
-        "offset": "2 days",
-    },
-    {
-        "comment_id": "51000000-0000-0000-0000-000000000005",
-        "lesson_id": "42000000-0000-0000-0000-000000000006",
-        "user_id": "20000000-0000-0000-0000-000000000001",
-        "content": "Nhom minh se bo sung tai lieu nang cao.",
-        "offset": "1 day",
-    },
-]
-
-BASELINE_NOTIFICATIONS = [
-    {
-        "notification_id": "73000000-0000-0000-0000-000000000001",
-        "user_id": "30000000-0000-0000-0000-000000000001",
-        "title": "Tien do hoc tap",
-        "message": "Ban da hoan thanh 100% khoa Nhap mon ngon ngu ky hieu.",
-        "is_read": True,
-        "offset": "3 days",
-    },
-    {
-        "notification_id": "73000000-0000-0000-0000-000000000002",
-        "user_id": "30000000-0000-0000-0000-000000000002",
-        "title": "Nhac nho hoc tap",
-        "message": "Ban dang dat 35% o khoa Giao tiep trong lop hoc.",
-        "is_read": False,
-        "offset": "1 day",
-    },
-    {
-        "notification_id": "73000000-0000-0000-0000-000000000003",
-        "user_id": "30000000-0000-0000-0000-000000000003",
-        "title": "Ban moi",
-        "message": "Ban duoc de xuat hoc tiep chu de nang cao.",
-        "is_read": False,
-        "offset": "8 hours",
-    },
-]
-
-BASELINE_STREAKS = [
-    {
-        "student_id": "30000000-0000-0000-0000-000000000001",
-        "current_streak": 5,
-        "highest_streak": 7,
-        "days_ago": 1,
-    },
-    {
-        "student_id": "30000000-0000-0000-0000-000000000002",
-        "current_streak": 2,
-        "highest_streak": 4,
-        "days_ago": 0,
-    },
-    {
-        "student_id": "30000000-0000-0000-0000-000000000003",
-        "current_streak": 1,
-        "highest_streak": 3,
-        "days_ago": 2,
-    },
-]
-
-BASELINE_USER_IDS = [
-    "10000000-0000-0000-0000-000000000001",
-    "20000000-0000-0000-0000-000000000001",
-    "20000000-0000-0000-0000-000000000002",
-    "30000000-0000-0000-0000-000000000001",
-    "30000000-0000-0000-0000-000000000002",
-    "30000000-0000-0000-0000-000000000003",
-]
-
-BASELINE_COURSE_IDS = [
-    "40000000-0000-0000-0000-000000000001",
-    "40000000-0000-0000-0000-000000000002",
-    "40000000-0000-0000-0000-000000000003",
-]
+RESET_BASELINE_LOCK = threading.Lock()
+RESET_BASELINE: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
 
-def apply_reset(conn: psycopg.Connection) -> Dict[str, Any]:
-    enrollment_ids = [row["enrollment_id"] for row in BASELINE_ENROLLMENTS]
-    comment_ids = [row["comment_id"] for row in BASELINE_COMMENTS]
-    notification_ids = [row["notification_id"] for row in BASELINE_NOTIFICATIONS]
-    streak_student_ids = [row["student_id"] for row in BASELINE_STREAKS]
-    baseline_user_ids = BASELINE_USER_IDS
-    baseline_course_ids = BASELINE_COURSE_IDS
-
-    counts: Dict[str, Any] = {}
+# Chụp baseline runtime để phục vụ nút reset.
+def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM notification_users WHERE notification_id <> ALL(%s::uuid[])",
-            (notification_ids,),
+            """
+            SELECT enrollment_id, student_id, course_id, progress, enrolled_at
+            FROM course_enrollments
+            ORDER BY enrollment_id ASC
+            """
         )
-        counts["deleted_extra_notifications"] = cur.rowcount
-
-        for item in BASELINE_NOTIFICATIONS:
-            cur.execute(
-                """
-                INSERT INTO notification_users (
-                    notification_id, user_id, title, message, is_read, created_at
-                )
-                VALUES (
-                    %s::uuid, %s::uuid, %s, %s, %s, CURRENT_TIMESTAMP - %s::interval
-                )
-                ON CONFLICT (notification_id) DO UPDATE
-                SET user_id = EXCLUDED.user_id,
-                    title = EXCLUDED.title,
-                    message = EXCLUDED.message,
-                    is_read = EXCLUDED.is_read,
-                    created_at = EXCLUDED.created_at
-                """,
-                (
-                    item["notification_id"],
-                    item["user_id"],
-                    item["title"],
-                    item["message"],
-                    item["is_read"],
-                    item["offset"],
-                ),
-            )
+        enrollments = cur.fetchall()
 
         cur.execute(
-            "DELETE FROM comments WHERE comment_id <> ALL(%s::uuid[])",
-            (comment_ids,),
+            """
+            SELECT comment_id, lesson_id, user_id, content, created_at
+            FROM comments
+            ORDER BY comment_id ASC
+            """
         )
-        counts["deleted_extra_comments"] = cur.rowcount
-
-        for item in BASELINE_COMMENTS:
-            cur.execute(
-                """
-                INSERT INTO comments (
-                    comment_id, lesson_id, user_id, content, created_at
-                )
-                VALUES (
-                    %s::uuid, %s::uuid, %s::uuid, %s, CURRENT_TIMESTAMP - %s::interval
-                )
-                ON CONFLICT (comment_id) DO UPDATE
-                SET lesson_id = EXCLUDED.lesson_id,
-                    user_id = EXCLUDED.user_id,
-                    content = EXCLUDED.content,
-                    created_at = EXCLUDED.created_at
-                """,
-                (
-                    item["comment_id"],
-                    item["lesson_id"],
-                    item["user_id"],
-                    item["content"],
-                    item["offset"],
-                ),
-            )
+        comments = cur.fetchall()
 
         cur.execute(
-            "DELETE FROM course_enrollments WHERE enrollment_id <> ALL(%s::uuid[])",
-            (enrollment_ids,),
+            """
+            SELECT notification_id, user_id, title, message, is_read, created_at
+            FROM notification_users
+            ORDER BY notification_id ASC
+            """
         )
-        counts["deleted_extra_enrollments"] = cur.rowcount
+        notifications = cur.fetchall()
 
-        for item in BASELINE_ENROLLMENTS:
-            cur.execute(
+        cur.execute(
+            """
+            SELECT student_id, current_streak, highest_streak, last_activity_date
+            FROM student_streaks
+            ORDER BY student_id ASC
+            """
+        )
+        streaks = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT user_id, is_deleted
+            FROM users
+            ORDER BY user_id ASC
+            """
+        )
+        users = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT course_id, is_deleted
+            FROM general_courses
+            ORDER BY course_id ASC
+            """
+        )
+        courses = cur.fetchall()
+
+    return {
+        "course_enrollments": enrollments,
+        "comments": comments,
+        "notification_users": notifications,
+        "student_streaks": streaks,
+        "users": users,
+        "general_courses": courses,
+    }
+
+
+# Đảm bảo baseline chỉ tạo 1 lần cho mỗi vòng chạy app.
+def ensure_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
+    global RESET_BASELINE
+    with RESET_BASELINE_LOCK:
+        if RESET_BASELINE is None:
+            RESET_BASELINE = capture_reset_baseline(conn)
+        return deepcopy(RESET_BASELINE)
+
+
+# Reset dữ liệu demo về baseline runtime đã chụp.
+def apply_reset(conn: psycopg.Connection) -> Dict[str, Any]:
+    baseline = ensure_reset_baseline(conn)
+    counts: Dict[str, Any] = {}
+
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM notification_users")
+        counts["deleted_notification_users"] = cur.rowcount
+
+        cur.execute("DELETE FROM comments")
+        counts["deleted_comments"] = cur.rowcount
+
+        cur.execute("DELETE FROM course_enrollments")
+        counts["deleted_course_enrollments"] = cur.rowcount
+
+        cur.execute("DELETE FROM student_streaks")
+        counts["deleted_student_streaks"] = cur.rowcount
+
+        enrollment_rows = [
+            (
+                row["enrollment_id"],
+                row["student_id"],
+                row["course_id"],
+                row["progress"],
+                row["enrolled_at"],
+            )
+            for row in baseline["course_enrollments"]
+        ]
+        if enrollment_rows:
+            cur.executemany(
                 """
                 INSERT INTO course_enrollments (
                     enrollment_id, student_id, course_id, progress, enrolled_at
-                )
-                VALUES (
-                    %s::uuid, %s::uuid, %s::uuid, %s::numeric, CURRENT_TIMESTAMP - %s::interval
-                )
-                ON CONFLICT (enrollment_id) DO UPDATE
-                SET student_id = EXCLUDED.student_id,
-                    course_id = EXCLUDED.course_id,
-                    progress = EXCLUDED.progress,
-                    enrolled_at = EXCLUDED.enrolled_at
+                ) VALUES (%s, %s, %s, %s, %s)
                 """,
-                (
-                    item["enrollment_id"],
-                    item["student_id"],
-                    item["course_id"],
-                    item["progress"],
-                    item["offset"],
-                ),
+                enrollment_rows,
             )
+        counts["restored_course_enrollments"] = len(enrollment_rows)
 
-        cur.execute(
-            "DELETE FROM student_streaks WHERE student_id <> ALL(%s::uuid[])",
-            (streak_student_ids,),
-        )
-        counts["deleted_extra_streaks"] = cur.rowcount
+        comment_rows = [
+            (
+                row["comment_id"],
+                row["lesson_id"],
+                row["user_id"],
+                row["content"],
+                row["created_at"],
+            )
+            for row in baseline["comments"]
+        ]
+        if comment_rows:
+            cur.executemany(
+                """
+                INSERT INTO comments (
+                    comment_id, lesson_id, user_id, content, created_at
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                comment_rows,
+            )
+        counts["restored_comments"] = len(comment_rows)
 
-        for item in BASELINE_STREAKS:
-            cur.execute(
+        notification_rows = [
+            (
+                row["notification_id"],
+                row["user_id"],
+                row["title"],
+                row["message"],
+                row["is_read"],
+                row["created_at"],
+            )
+            for row in baseline["notification_users"]
+        ]
+        if notification_rows:
+            cur.executemany(
+                """
+                INSERT INTO notification_users (
+                    notification_id, user_id, title, message, is_read, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                notification_rows,
+            )
+        counts["restored_notification_users"] = len(notification_rows)
+
+        streak_rows = [
+            (
+                row["student_id"],
+                row["current_streak"],
+                row["highest_streak"],
+                row["last_activity_date"],
+            )
+            for row in baseline["student_streaks"]
+        ]
+        if streak_rows:
+            cur.executemany(
                 """
                 INSERT INTO student_streaks (
                     student_id, current_streak, highest_streak, last_activity_date
-                )
-                VALUES (
-                    %s::uuid, %s::int, %s::int, CURRENT_DATE - %s::int
-                )
+                ) VALUES (%s, %s, %s, %s)
                 ON CONFLICT (student_id) DO UPDATE
                 SET current_streak = EXCLUDED.current_streak,
                     highest_streak = EXCLUDED.highest_streak,
                     last_activity_date = EXCLUDED.last_activity_date
                 """,
-                (
-                    item["student_id"],
-                    item["current_streak"],
-                    item["highest_streak"],
-                    item["days_ago"],
-                ),
+                streak_rows,
             )
+        counts["restored_student_streaks"] = len(streak_rows)
 
-        cur.execute(
-            """
-            UPDATE users
-            SET is_deleted = FALSE
-            WHERE user_id = ANY(%s::uuid[])
-            """,
-            (baseline_user_ids,),
-        )
-        counts["restored_users_is_deleted"] = cur.rowcount
+        user_flags = [(row["is_deleted"], row["user_id"]) for row in baseline["users"]]
+        if user_flags:
+            cur.executemany(
+                """
+                UPDATE users
+                SET is_deleted = %s
+                WHERE user_id = %s
+                """,
+                user_flags,
+            )
+        counts["restored_users_is_deleted"] = len(user_flags)
 
-        cur.execute(
-            """
-            UPDATE general_courses
-            SET is_deleted = FALSE
-            WHERE course_id = ANY(%s::uuid[])
-            """,
-            (baseline_course_ids,),
-        )
-        counts["restored_courses_is_deleted"] = cur.rowcount
+        course_flags = [(row["is_deleted"], row["course_id"]) for row in baseline["general_courses"]]
+        if course_flags:
+            cur.executemany(
+                """
+                UPDATE general_courses
+                SET is_deleted = %s
+                WHERE course_id = %s
+                """,
+                course_flags,
+            )
+        counts["restored_courses_is_deleted"] = len(course_flags)
 
     conn.commit()
     return counts
 
-
+# Chạy một bước pipeline và đẩy sự kiện SSE.
 def execute_step(
     run: RunState,
     *,
@@ -738,13 +695,13 @@ def execute_step(
         },
     )
 
-    # Small gap so step_started SSE flushes to browser before sql_log events arrive
+    # Đợi nhẹ để client nhận step_started trước.
     time.sleep(0.15)
 
-    # Stream tung dong SQL thuc te truoc khi chay
+    # Đẩy log SQL từng dòng để terminal hiển thị theo thời gian thực.
     for line in (sql_lines or []):
         registry.append_event(run, "sql_log", {"line": line, "step_key": step_key})
-        time.sleep(0.06)  # delay de SSE stream tung dong ro rang
+        time.sleep(0.06)  # Nghỉ ngắn giữa hai dòng log.
 
     try:
         details = fn() or {}
@@ -759,7 +716,7 @@ def execute_step(
             "details": to_jsonable(details),
         }
         run.trace.append(trace_item)
-        # Emit step_result voi du lieu thuc te tra ve
+        # Đẩy dữ liệu trả về của bước vừa chạy xong.
         registry.append_event(run, "step_result", {
             "step_key": step_key,
             "step_name": step_name,
@@ -783,19 +740,19 @@ def execute_step(
         registry.append_event(run, "step_failed", trace_item)
         raise
 
-
-
+# Gửi block SQL mô tả vào terminal SSE.
 def emit_sql(run: RunState, step_key: str, lines: list) -> None:
-    """Emit sql_log SSE events line by line with a small delay for streaming."""
+    """Gửi sự kiện sql_log theo từng dòng."""
     import sys
     print(f"[emit_sql] step={step_key} lines={len(lines)}", file=sys.stderr, flush=True)
-    time.sleep(0.1)  # gap so step_started flushes first
+    time.sleep(0.1)  # Nghỉ ngắn để step_started ra trước.
     for i, line in enumerate(lines):
         registry.append_event(run, "sql_log", {"line": line, "step_key": step_key})
         print(f"[emit_sql]   line {i}: {line[:60]}", file=sys.stderr, flush=True)
-        time.sleep(0.06)  # streaming delay per line
+        time.sleep(0.06)  # Nghỉ ngắn giữa 2 dòng log.
 
 
+# Kịch bản: enroll và kiểm tra trigger streak.
 def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -822,7 +779,7 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
             (student_id,),
         )
         if not has_student:
-            raise ValueError("student_id khÃ´ng tá»“n táº¡i trong báº£ng students.")
+            raise ValueError("student_id không tồn tại trong bảng students.")
 
         has_course = run_query_value(
             conn,
@@ -830,7 +787,7 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
             (course_id,),
         )
         if not has_course:
-            raise ValueError("course_id khÃ´ng tá»“n táº¡i hoáº·c Ä‘Ã£ bá»‹ xÃ³a má»m.")
+            raise ValueError("course_id không tồn tại hoặc đã bị xóa mềm.")
 
         with conn.cursor() as cur:
             cur.execute(
@@ -917,7 +874,7 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
         return {name: len(rows) for name, rows in views_after.items()}
 
     def step_complete() -> Dict[str, Any]:
-        context["message"] = "Enroll thÃ nh cÃ´ng. Pipeline Ä‘Ã£ hoÃ n táº¥t."
+        context["message"] = "Enroll thành công. Pipeline đã hoàn tất."
         return {"status": "done"}
 
 
@@ -1004,6 +961,7 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
     )
 
 
+# Kịch bản: transaction update progress + comment.
 def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -1015,13 +973,13 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
         comment_text = str(payload.get("comment_text", "")).strip()
 
         if progress_raw is None:
-            raise ValueError("Thiáº¿u trÆ°á»ng progress.")
+            raise ValueError("Thiếu trường progress.")
         try:
             progress = Decimal(str(progress_raw))
         except Exception as exc:
-            raise ValueError("progress pháº£i lÃ  sá»‘ há»£p lá»‡.") from exc
+            raise ValueError("progress phải là số hợp lệ.") from exc
         if not comment_text:
-            raise ValueError("comment_text khÃ´ng Ä‘Æ°á»£c Ä‘á»ƒ trá»‘ng.")
+            raise ValueError("comment_text không được để trống.")
 
         has_student = run_query_value(
             conn,
@@ -1029,7 +987,7 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
             (student_id,),
         )
         if not has_student:
-            raise ValueError("student_id khÃ´ng tá»“n táº¡i trong báº£ng students.")
+            raise ValueError("student_id không tồn tại trong bảng students.")
 
         has_course = run_query_value(
             conn,
@@ -1037,7 +995,7 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
             (course_id,),
         )
         if not has_course:
-            raise ValueError("course_id khÃ´ng tá»“n táº¡i hoáº·c Ä‘Ã£ bá»‹ xÃ³a má»m.")
+            raise ValueError("course_id không tồn tại hoặc đã bị xóa mềm.")
 
         has_lesson = run_query_value(
             conn,
@@ -1045,7 +1003,7 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
             (lesson_id,),
         )
         if not has_lesson:
-            raise ValueError("lesson_id khÃ´ng tá»“n táº¡i trong báº£ng general_course_lessons.")
+            raise ValueError("lesson_id không tồn tại trong bảng general_course_lessons.")
 
         with conn.cursor() as cur:
             cur.execute(
@@ -1145,7 +1103,7 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
         return {name: len(rows) for name, rows in views_after.items()}
 
     def step_complete() -> Dict[str, Any]:
-        context["message"] = "Transaction cáº­p nháº­t progress + comment Ä‘Ã£ cháº¡y xong."
+        context["message"] = "Transaction cập nhật progress + comment đã chạy xong."
         return {"status": "done"}
 
 
@@ -1233,6 +1191,7 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
     )
 
 
+# Kịch bản: đọc 4 reporting view.
 def run_view_reports_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     def step_validate() -> Dict[str, Any]:
         context["fingerprint_before"] = fetch_mutation_fingerprint(conn)
@@ -1317,6 +1276,7 @@ def run_view_reports_pipeline(run: RunState, conn: psycopg.Connection, context: 
     )
 
 
+# Kịch bản: gọi hàm tìm học viên.
 def run_search_students_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -1436,6 +1396,7 @@ def run_search_students_pipeline(run: RunState, conn: psycopg.Connection, contex
     )
 
 
+# Kịch bản: gọi hàm tìm khóa học nâng cao.
 def run_search_courses_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -1556,6 +1517,7 @@ def run_search_courses_pipeline(run: RunState, conn: psycopg.Connection, context
     )
 
 
+# Kịch bản: cập nhật tiến độ và kiểm tra notification.
 def run_update_progress_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -1692,7 +1654,7 @@ def run_update_progress_pipeline(run: RunState, conn: psycopg.Connection, contex
             f"  p_course_id  => '{cid}'::uuid,",
             f"  p_progress   => {prog}::numeric",
             f");",
-            f"-- ↳ UPDATE course_enrollments",
+            f"-- -> UPDATE course_enrollments",
             f"--   SET progress = ROUND({prog}, 2)",
             f"--  WHERE student_id = '{sid}' AND course_id = '{cid}';",
             f"",
@@ -1743,6 +1705,7 @@ def run_update_progress_pipeline(run: RunState, conn: psycopg.Connection, contex
     )
 
 
+# Kịch bản: xóa mềm user và check trigger updated_at.
 def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -1751,7 +1714,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT u.user_id, u.username, u.is_deleted
+                SELECT u.user_id, u.username, u.is_deleted, u.updated_at
                 FROM users AS u
                 WHERE u.user_id = %s::uuid
                 """,
@@ -1771,7 +1734,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
             cur.execute("CALL sp_soft_delete_user(%s::uuid)", (user_id,))
             cur.execute(
                 """
-                SELECT user_id, username, is_deleted
+                SELECT user_id, username, is_deleted, updated_at
                 FROM users
                 WHERE user_id = %s::uuid
                 """,
@@ -1784,6 +1747,8 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
 
     def step_trigger_check() -> Dict[str, Any]:
         user_id = context["validated"]["user_id"]
+        user_before = context["metrics_before"]["user_before"]
+        user_after = context["action_data"]["user_after_soft_delete"]
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1796,7 +1761,10 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
             visible_in_student_search = cur.fetchone()["total"]
         conn.commit()
         return {
-            "user_before": context["metrics_before"]["user_before"],
+            "user_before": user_before,
+            "updated_at_before": user_before["updated_at"],
+            "updated_at_after": user_after["updated_at"],
+            "updated_at_changed": user_before["updated_at"] != user_after["updated_at"],
             "visible_in_fn_search_students": visible_in_student_search,
         }
 
@@ -1825,7 +1793,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
         sql_label="Validate user_id",
         sql_lines=[
             f"-- Doc thong tin user truoc khi xoa mem:",
-            f"SELECT user_id, username, is_deleted",
+            f"SELECT user_id, username, is_deleted, updated_at",
             f"  FROM users WHERE user_id = '{uid}'::uuid;",
         ],
         fn=step_validate,
@@ -1839,7 +1807,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
         sql_label="CALL sp_soft_delete_user(user_id)",
         sql_lines=[
             f"CALL sp_soft_delete_user(p_user_id => '{uid}'::uuid);",
-            f"-- ↳ UPDATE users",
+            f"-- -> UPDATE users",
             f"--   SET is_deleted = TRUE",
             f"--  WHERE user_id = '{uid}';",
             f"",
@@ -1859,6 +1827,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
             f"-- TRIGGER da chay: fn_update_timestamp()",
             f"-- BEFORE UPDATE ON users -> tu dong cap nhat updated_at",
             f"",
+            f"SELECT updated_at FROM users WHERE user_id = '{uid}'::uuid;",
             f"-- Xac nhan user da bi an khoi ket qua tim kiem:",
             f"SELECT COUNT(*) AS visible",
             f"  FROM fn_search_students(NULL::text)",
@@ -1893,6 +1862,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
     )
 
 
+# Kịch bản: xóa mềm khóa học và check trigger updated_at.
 def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     payload = run.payload
 
@@ -1901,7 +1871,7 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT course_id, title, is_deleted
+                SELECT course_id, title, is_deleted, updated_at
                 FROM general_courses
                 WHERE course_id = %s::uuid
                 """,
@@ -1921,7 +1891,7 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
             cur.execute("CALL sp_soft_delete_course(%s::uuid)", (course_id,))
             cur.execute(
                 """
-                SELECT course_id, title, is_deleted
+                SELECT course_id, title, is_deleted, updated_at
                 FROM general_courses
                 WHERE course_id = %s::uuid
                 """,
@@ -1934,6 +1904,8 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
 
     def step_trigger_check() -> Dict[str, Any]:
         course_id = context["validated"]["course_id"]
+        course_before = context["metrics_before"]["course_before"]
+        course_after = context["action_data"]["course_after_soft_delete"]
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1946,7 +1918,10 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
             visible_in_search = cur.fetchone()["total"]
         conn.commit()
         return {
-            "course_before": context["metrics_before"]["course_before"],
+            "course_before": course_before,
+            "updated_at_before": course_before["updated_at"],
+            "updated_at_after": course_after["updated_at"],
+            "updated_at_changed": course_before["updated_at"] != course_after["updated_at"],
             "visible_in_fn_search_courses_advanced": visible_in_search,
         }
 
@@ -1975,7 +1950,7 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
         sql_label="Validate course_id",
         sql_lines=[
             f"-- Doc thong tin khoa hoc truoc khi xoa mem:",
-            f"SELECT course_id, title, is_deleted",
+            f"SELECT course_id, title, is_deleted, updated_at",
             f"  FROM general_courses WHERE course_id = '{cid}'::uuid;",
         ],
         fn=step_validate,
@@ -1989,7 +1964,7 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
         sql_label="CALL sp_soft_delete_course(course_id)",
         sql_lines=[
             f"CALL sp_soft_delete_course(p_course_id => '{cid}'::uuid);",
-            f"-- ↳ UPDATE general_courses",
+            f"-- -> UPDATE general_courses",
             f"--   SET is_deleted = TRUE",
             f"--  WHERE course_id = '{cid}';",
             f"",
@@ -2008,6 +1983,7 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
             f"-- TRIGGER da chay: fn_update_timestamp()",
             f"-- BEFORE UPDATE ON general_courses -> tu dong cap nhat updated_at",
             f"",
+            f"SELECT updated_at FROM general_courses WHERE course_id = '{cid}'::uuid;",
             f"-- Xac nhan khoa hoc da bi an khoi ket qua tim kiem:",
             f"SELECT COUNT(*) AS visible",
             f"  FROM fn_search_courses_advanced(NULL::text, NULL::int, NULL::text)",
@@ -2042,10 +2018,11 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
     )
 
 
+# Kịch bản: reset dữ liệu demo về baseline runtime.
 def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
     def step_validate() -> Dict[str, Any]:
         if run.payload:
-            raise ValueError("Action reset khÃ´ng nháº­n payload.")
+            raise ValueError("Action reset không nhận payload.")
         conn.commit()
         return {"payload": "empty"}
 
@@ -2080,7 +2057,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         return {name: len(rows) for name, rows in views_after.items()}
 
     def step_complete() -> Dict[str, Any]:
-        context["message"] = "Reset demo hoÃ n táº¥t, dá»¯ liá»‡u Ä‘Ã£ quay vá» baseline."
+        context["message"] = "Reset demo completed. Data restored from runtime baseline snapshot."
         return {"status": "done"}
 
     execute_step(
@@ -2088,7 +2065,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         step_index=1,
         step_key="validate_input",
         step_name="Validate input",
-        sql_label="Kiá»ƒm tra payload reset",
+        sql_label="Kiểm tra payload reset",
         fn=step_validate,
     )
     execute_step(
@@ -2096,7 +2073,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         step_index=2,
         step_key="execute_procedure",
         step_name="Execute reset SQL",
-        sql_label="DELETE extra rows + UPSERT baseline",
+        sql_label="Restore tables from runtime baseline snapshot",
         fn=step_execute,
     )
     execute_step(
@@ -2104,7 +2081,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         step_index=3,
         step_key="check_trigger_side_effects",
         step_name="Post-reset consistency check",
-        sql_label="SELECT COUNT(*) tá»« cÃ¡c báº£ng chÃ­nh",
+        sql_label="SELECT COUNT(*) từ các bảng chính",
         fn=step_trigger_check,
     )
     execute_step(
@@ -2112,7 +2089,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         step_index=4,
         step_key="refresh_source_tables",
         step_name="Refresh source tables",
-        sql_label="SELECT snapshot tá»« course_enrollments/student_streaks/notification_users/comments",
+        sql_label="SELECT snapshot từ course_enrollments/student_streaks/notification_users/comments",
         fn=step_refresh_tables,
     )
     execute_step(
@@ -2120,7 +2097,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
         step_index=5,
         step_key="refresh_reporting_views",
         step_name="Refresh reporting views",
-        sql_label="SELECT snapshot tá»« 4 reporting views",
+        sql_label="SELECT snapshot từ 4 reporting views",
         fn=step_refresh_views,
     )
     execute_step(
@@ -2133,6 +2110,7 @@ def run_reset_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[st
     )
 
 
+# Worker chính xử lý toàn bộ vòng đời một run.
 def run_worker(run: RunState) -> None:
     run.status = "running"
     registry.append_event(
@@ -2151,6 +2129,7 @@ def run_worker(run: RunState) -> None:
 
     try:
         with get_db_connection() as conn:
+            ensure_reset_baseline(conn)
             tables_before = fetch_source_tables(conn)
             views_before = fetch_reporting_views(conn)
             context: Dict[str, Any] = {}
@@ -2177,7 +2156,7 @@ def run_worker(run: RunState) -> None:
 
             tables_after = context.get("tables_after") or fetch_source_tables(conn)
             views_after = context.get("views_after") or fetch_reporting_views(conn)
-            message = context.get("message", "Pipeline Ä‘Ã£ cháº¡y thÃ nh cÃ´ng.")
+            message = context.get("message", "Pipeline đã chạy thành công.")
 
             result = {
                 "ok": True,
@@ -2211,6 +2190,7 @@ def run_worker(run: RunState) -> None:
     registry.mark_finished(run, ok=ok, result=result, error=error_message)
 
 
+# Đóng gói một event theo chuẩn SSE.
 def format_sse_event(event: Dict[str, Any]) -> bytes:
     payload = json.dumps(event, ensure_ascii=False)
     base = (
@@ -2218,23 +2198,24 @@ def format_sse_event(event: Dict[str, Any]) -> bytes:
         f"event: {event['type']}\n"
         f"data: {payload}\n\n"
     )
-    # Add padding comment to ensure data exceeds WSGI 4096-byte buffer threshold
-    # This forces Werkzeug to flush each event immediately
+    # Chèn padding để vượt ngưỡng buffer 4096 byte của WSGI.
+    # Làm vậy giúp event được đẩy ra ngay.
     padding_needed = max(0, 4097 - len(base.encode('utf-8')))
     if padding_needed > 0:
         base += f": {' ' * padding_needed}\n\n"
     return base.encode("utf-8")
 
 
+# Stream event SSE cho client theo thứ tự.
 def stream_run_events(run: RunState):
-    """Stream events one at a time for real-time SQL log display."""
+    """Phát event tuần tự để giao diện nhận log realtime."""
     index = 0
     while True:
         timeout = False
         with run.condition:
-            # Wait until there's at least 1 new event
+            # Chờ tới khi có ít nhất 1 event mới.
             while index >= len(run.events) and not run.finished:
-                run.condition.wait(timeout=0.2)  # Short wait so we pick up events quickly
+                run.condition.wait(timeout=0.2)  # Nghỉ ngắn để bắt event nhanh.
                 if index >= len(run.events) and not run.finished:
                     timeout = True
                     break
@@ -2249,7 +2230,7 @@ def stream_run_events(run: RunState):
 
         if next_event:
             yield format_sse_event(next_event)
-            # After each sql_log, yield a comment to force immediate flush
+            # Sau mỗi sql_log thì đẩy thêm 1 comment để flush ngay.
             if next_event.get("type") == "sql_log":
                 yield b": \n\n"
         else:
@@ -2265,13 +2246,16 @@ app = Flask(__name__, static_folder="static")
 
 
 @app.get("/")
+# Trả trang giao diện chính.
 def index() -> Response:
     return send_from_directory(app.static_folder, "index.html")
 
 
 @app.get("/api/init")
+# Trả dữ liệu khởi tạo cho frontend.
 def api_init():
     with get_db_connection() as conn:
+        ensure_reset_baseline(conn)
         response = {
             "ok": True,
             "lookups": fetch_lookup_data(conn),
@@ -2282,15 +2266,16 @@ def api_init():
 
 
 @app.post("/api/runs")
+# Tạo run mới từ action + payload.
 def create_run():
     body = request.get_json(silent=True) or {}
     action = normalize_action(body.get("action"))
     payload = body.get("payload") or {}
 
     if action not in SUPPORTED_ACTIONS:
-        return jsonify({"ok": False, "message": "action khÃ´ng há»£p lá»‡."}), 400
+        return jsonify({"ok": False, "message": "action không hợp lệ."}), 400
     if not isinstance(payload, dict):
-        return jsonify({"ok": False, "message": "payload pháº£i lÃ  object JSON."}), 400
+        return jsonify({"ok": False, "message": "payload phải là object JSON."}), 400
 
     run = registry.create(action=action, payload=payload)
     thread = threading.Thread(target=run_worker, args=(run,), daemon=True, name=f"run-{run.run_id[:8]}")
@@ -2299,6 +2284,7 @@ def create_run():
 
 
 @app.get("/api/runs/<run_id>/events")
+# Stream event của một run cụ thể.
 def run_events(run_id: str):
     run = registry.get(run_id)
     if run is None:
@@ -2323,12 +2309,13 @@ def run_events(run_id: str):
 
 
 @app.get("/api/runs/<run_id>/result")
+# Trả kết quả cuối cùng của run.
 def run_result(run_id: str):
     run = registry.get(run_id)
     if run is None:
-        return jsonify({"ok": False, "message": "KhÃ´ng tÃ¬m tháº¥y run_id."}), 404
+        return jsonify({"ok": False, "message": "Không tìm thấy run_id."}), 404
     if not run.finished:
-        return jsonify({"ok": False, "message": "Run chÆ°a hoÃ n táº¥t.", "status": run.status}), 202
+        return jsonify({"ok": False, "message": "Run chưa hoàn tất.", "status": run.status}), 202
     return jsonify(to_jsonable(run.result))
 
 
@@ -2339,5 +2326,6 @@ if __name__ == "__main__":
         debug=False,
         threaded=True,
     )
+
 
 

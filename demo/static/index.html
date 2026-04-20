@@ -328,42 +328,24 @@
       </div>
     </div>
 
-    <!-- ── BEFORE / AFTER ── -->
+    <!-- ── DATA CHANGES ── -->
     <div class="main-section">
       <div class="section-header">
-        <span class="section-icon">⇄</span>
-        <h3>Trạng thái DB — Trước &amp; Sau</h3>
-        <span class="section-hint">So sánh bảng dữ liệu thay đổi sau khi chạy kịch bản</span>
+        <span class="section-icon">Δ</span>
+        <h3>Biến Động Bảng Nguồn</h3>
+        <span class="section-hint">Chỉ hiển thị thay đổi thật: thêm, xóa, cập nhật.</span>
       </div>
-      <div class="diff-grid">
-        <div class="diff-col">
-          <div class="diff-col-label before-label">◀ TRƯỚC</div>
-          <div id="tables-before"></div>
-        </div>
-        <div class="diff-col">
-          <div class="diff-col-label after-label">AFTER ▶</div>
-          <div id="tables-after"></div>
-        </div>
-      </div>
+      <div id="tables-delta"></div>
     </div>
 
-    <!-- ── REPORTING VIEWS ── -->
+    <!-- ── VIEW CHANGES ── -->
     <div class="main-section">
       <div class="section-header">
         <span class="section-icon">◈</span>
-        <h3>Reporting Views</h3>
-        <span class="section-hint">Kết quả truy vấn từ 4 views báo cáo</span>
+        <h3>Biến Động Reporting Views</h3>
+        <span class="section-hint">Kết quả view được đánh dấu thay đổi theo từng lần chạy.</span>
       </div>
-      <div class="diff-grid">
-        <div class="diff-col">
-          <div class="diff-col-label before-label">◀ TRƯỚC</div>
-          <div id="views-before"></div>
-        </div>
-        <div class="diff-col">
-          <div class="diff-col-label after-label">AFTER ▶</div>
-          <div id="views-after"></div>
-        </div>
-      </div>
+      <div id="views-delta"></div>
     </div>
 
   </main><!-- /main -->

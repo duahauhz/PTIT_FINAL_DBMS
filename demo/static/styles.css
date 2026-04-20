@@ -1,33 +1,33 @@
-/* ═══════════════════════════════════════════════════════════
-   DBMS Demo — Dark Terminal Theme
+﻿/* ═══════════════════════════════════════════════════════════
+   Giao dien demo DBMS theo phong cach terminal toi
    Font: Inter (UI) + JetBrains Mono (code/terminal)
 ═══════════════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
-/* ── Variables ──────────────────────────────────────────── */
+/* ── Bien mau va theme ──────────────────────────────────── */
 :root {
-  /* Background layers */
+  /* Lop nen */
   --bg-app:      #0d1117;
   --bg-sidebar:  #161b22;
   --bg-card:     #1c2230;
   --bg-terminal: #0a0f16;
   --bg-input:    #161b22;
 
-  /* Borders */
+  /* Vien */
   --border:      #30363d;
   --border-soft: #21262d;
 
-  /* Text */
+  /* Mau chu */
   --text-primary:   #e6edf3;
   --text-secondary: #8b949e;
   --text-muted:     #484f58;
 
-  /* Accent / Semantic */
+  /* Mau nhan va ngu nghia */
   --accent:      #388bfd;
   --accent-glow: rgba(56,139,253,0.18);
 
-  /* SQL Syntax colors (terminal) */
+  /* Mau cu phap SQL (terminal) */
   --sql-keyword:  #ff7b72;   /* SELECT, FROM, CALL, BEGIN */
   --sql-function: #d2a8ff;   /* sp_*, fn_*, procedure name */
   --sql-string:   #a5d6ff;   /* values, strings */
@@ -39,14 +39,14 @@
   --sql-txn:      #79c0ff;   /* BEGIN, COMMIT, ROLLBACK */
   --sql-info:     #484f58;   /* info lines */
 
-  /* Badge colors */
+  /* Mau badge */
   --badge-view:  #2d9cdb;
   --badge-fn:    #9b59b6;
   --badge-proc:  #27ae60;
   --badge-txn:   #e67e22;
   --badge-del:   #e74c3c;
 
-  /* Pipeline step states */
+  /* Trang thai buoc pipeline */
   --step-pending:  #21262d;
   --step-running:  #1c3068;
   --step-success:  #1a362a;
@@ -57,7 +57,7 @@
   --radius-lg: 14px;
 }
 
-/* ── Reset ──────────────────────────────────────────────── */
+/* ── Reset CSS ──────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
@@ -69,7 +69,7 @@ html, body {
   line-height: 1.5;
 }
 
-/* ── Typography helpers ─────────────────────────────────── */
+/* ── Kieu chu dung chung ────────────────────────────────── */
 code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
@@ -80,7 +80,7 @@ code {
   color: var(--sql-string);
 }
 
-/* ── HEADER ─────────────────────────────────────────────── */
+/* ── Phan dau trang ─────────────────────────────────────── */
 .app-header {
   height: 56px;
   background: var(--bg-sidebar);
@@ -176,7 +176,7 @@ code {
   50% { opacity: 0.6; }
 }
 
-/* ── APP BODY (main layout) ──────────────────────────────── */
+/* ── Bo cuc chinh cua app ───────────────────────────────── */
 .app-body {
   display: grid;
   grid-template-columns: 270px 1fr;
@@ -184,7 +184,7 @@ code {
   overflow: hidden;
 }
 
-/* ── SIDEBAR ─────────────────────────────────────────────── */
+/* ── Thanh ben ───────────────────────────────────────────── */
 .sidebar {
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -334,7 +334,7 @@ code {
 .metric-chip-name { color: var(--text-secondary); }
 .metric-chip-val  { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--accent); }
 
-/* ── MAIN CONTENT ───────────────────────────────────────── */
+/* ── Noi dung chinh ─────────────────────────────────────── */
 .main-content {
   overflow-y: auto;
   padding: 18px;
@@ -343,7 +343,7 @@ code {
   gap: 16px;
 }
 
-/* ── SCENARIO PANEL ─────────────────────────────────────── */
+/* ── Panel kich ban ─────────────────────────────────────── */
 .scenario-panel {
   display: none;
 }
@@ -481,7 +481,7 @@ select.styled-input option { background: var(--bg-sidebar); }
 }
 .btn-danger:hover { background: #e74c3c; }
 
-/* ── SECTION WRAPPER ─────────────────────────────────────── */
+/* ── Khung section ───────────────────────────────────────── */
 .main-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -526,7 +526,7 @@ select.styled-input option { background: var(--bg-sidebar); }
 }
 .btn-clear-terminal:hover { color: var(--text-primary); border-color: var(--text-secondary); }
 
-/* ── PIPELINE TRACK ─────────────────────────────────────── */
+/* ── Dong pipeline ───────────────────────────────────────── */
 .pipeline-track {
   display: flex;
   gap: 0;
@@ -636,7 +636,7 @@ select.styled-input option { background: var(--bg-sidebar); }
 .step-arrow.active::before { background: var(--accent); }
 .step-arrow.active::after  { color: var(--accent); }
 
-/* ── SQL TERMINAL ───────────────────────────────────────── */
+/* ── Terminal SQL ───────────────────────────────────────── */
 .terminal-section { }
 
 .terminal-window {
@@ -660,7 +660,7 @@ select.styled-input option { background: var(--bg-sidebar); }
   padding: 0.5px 0;
 }
 
-/* Terminal color palette */
+/* Bang mau terminal */
 .terminal-line.sql-keyword { color: var(--sql-keyword); font-weight: 700; }
 .terminal-line.sql-function { color: var(--sql-function); }
 .terminal-line.sql-string { color: var(--sql-string); }
@@ -673,7 +673,7 @@ select.styled-input option { background: var(--bg-sidebar); }
 .terminal-line.info { color: var(--text-muted); }
 .terminal-line.separator { color: #30363d; }
 
-/* Animate each new line in */
+/* Hieu ung xuat hien cho dong moi */
 .terminal-line.new-line {
   animation: fade-in-line 0.18s ease forwards;
 }
@@ -683,7 +683,7 @@ select.styled-input option { background: var(--bg-sidebar); }
   to   { opacity: 1; transform: translateX(0); }
 }
 
-/* Blinking cursor at end */
+/* Con tro nhap nhay cuoi dong */
 .terminal-cursor::after {
   content: '▌';
   animation: blink-cursor 1s step-end infinite;
@@ -694,27 +694,16 @@ select.styled-input option { background: var(--bg-sidebar); }
   50% { opacity: 0; }
 }
 
-/* ── DIFF GRID (Before/After) ────────────────────────────── */
-.diff-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.diff-col-label {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 5px 10px;
-  border-radius: 5px;
-  margin-bottom: 8px;
-  letter-spacing: 0.5px;
-}
-.before-label { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
-.after-label  { background: rgba(56,139,253,0.1); color: #79c0ff; }
-
-/* ── DATA TABLES ─────────────────────────────────────────── */
+/* ── Bang du lieu va dau hieu thay doi ─────────────────── */
 .dataset-block {
   margin-bottom: 14px;
+}
+
+.dataset-block-changed {
+  border: 1px solid rgba(230,126,34,0.35);
+  border-radius: var(--radius-md);
+  padding: 8px;
+  background: rgba(230,126,34,0.06);
 }
 
 .dataset-title {
@@ -734,6 +723,44 @@ select.styled-input option { background: var(--bg-sidebar); }
   color: #c39bd3;
   padding: 1px 6px;
   border-radius: 4px;
+}
+
+.delta-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.delta-badge {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.delta-added {
+  background: rgba(230,126,34,0.25);
+  border: 1px solid rgba(230,126,34,0.45);
+  color: #f9c784;
+}
+
+.delta-updated {
+  background: rgba(255,184,77,0.2);
+  border: 1px solid rgba(255,184,77,0.38);
+  color: #ffd89a;
+}
+
+.delta-removed {
+  background: rgba(248,81,73,0.2);
+  border: 1px solid rgba(248,81,73,0.38);
+  color: #ff9b98;
+}
+
+.delta-unchanged {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--text-secondary);
 }
 
 .table-scroll {
@@ -779,9 +806,52 @@ td {
 tbody tr:hover { background: rgba(255,255,255,0.03); }
 tbody tr:last-child td { border-bottom: none; }
 
-/* Highlight changed cell */
-td.cell-changed {
-  color: var(--sql-ok);
+.change-col {
+  width: 92px;
+}
+
+.change-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.change-tag.added {
+  background: rgba(230,126,34,0.25);
+  border: 1px solid rgba(230,126,34,0.45);
+  color: #f9c784;
+}
+
+.change-tag.updated {
+  background: rgba(255,184,77,0.2);
+  border: 1px solid rgba(255,184,77,0.38);
+  color: #ffd89a;
+}
+
+.change-tag.removed {
+  background: rgba(248,81,73,0.2);
+  border: 1px solid rgba(248,81,73,0.38);
+  color: #ff9b98;
+}
+
+tr.row-added td {
+  background: rgba(230,126,34,0.14);
+}
+
+tr.row-updated td {
+  background: rgba(255,184,77,0.08);
+}
+
+tr.row-removed td {
+  background: rgba(248,81,73,0.12);
+  color: #ffb8b5;
+}
+
+td.cell-updated {
+  background: rgba(255,184,77,0.2);
+  color: #ffd89a;
   font-weight: 700;
 }
 
@@ -793,7 +863,17 @@ td.cell-changed {
   font-style: italic;
 }
 
-/* ── Scrollbar styling ──────────────────────────────────── */
+.delta-empty {
+  border: 1px dashed rgba(255,255,255,0.2);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* ── Tuy bien thanh cuon ────────────────────────────────── */
 ::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
@@ -803,5 +883,11 @@ td.cell-changed {
 @media (max-width: 900px) {
   .app-body { grid-template-columns: 1fr; }
   .sidebar { display: none; }
-  .diff-grid { grid-template-columns: 1fr; }
+  .dataset-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .delta-badges {
+    margin-left: 0;
+  }
 }

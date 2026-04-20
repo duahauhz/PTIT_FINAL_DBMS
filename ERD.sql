@@ -1,25 +1,4 @@
-﻿-- -- ===================================================================
--- -- Lá»†NH RESET DATABASE Sáº CH Sáº¼ (XÃ“A TOÃ€N Bá»˜)
--- -- Cháº¡y toÃ n bá»™ file nÃ y nÃ³ sáº½ xÃ³a trá»c lÃ³c DB vÃ  táº¡o láº¡i tá»« Ä‘áº§u
--- -- ===================================================================
--- DROP SCHEMA public CASCADE;
--- CREATE SCHEMA public;
--- GRANT ALL ON SCHEMA public TO postgres;
--- GRANT ALL ON SCHEMA public TO public;
--- -- LÆ°á»£c Ä‘á»“ CSDL chuáº©n PostgreSQL cho dá»± Ã¡n há»c ngÃ´n ngá»¯ kÃ½ hiá»‡u
--- -- Ghi chÃº:
--- -- - DÃ¹ng pgcrypto + gen_random_uuid() Ä‘á»ƒ sinh UUID máº·c Ä‘á»‹nh.
--- -- - DÃ¹ng TIMESTAMPTZ Ä‘á»ƒ lÆ°u thá»i gian cÃ³ mÃºi giá», trÃ¡nh lá»‡ch giá» há»‡ thá»‘ng.
--- -- - Thiáº¿t káº¿ Æ°u tiÃªn tÃ­nh toÃ n váº¹n dá»¯ liá»‡u: UNIQUE, CHECK, FOREIGN KEY rÃµ rÃ ng.
--- CREATE EXTENSION IF NOT EXISTS pgcrypto;
--- -- ===================================================================
--- -- 1) QUáº¢N LÃ NGÆ¯á»œI DÃ™NG & XÃC THá»°C
--- -- RÃ ng buá»™c chÃ­nh:
--- -- - users.username lÃ  duy nháº¥t
--- -- - user_profiles lÃ  quan há»‡ 1-1 vá»›i users qua user_id UNIQUE
--- -- - authentication_sessions cÃ³ kiá»ƒm tra expires_at > created_at
--- -- ===================================================================
-CREATE TABLE roles (
+﻿CREATE TABLE roles (
     role_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     role_name VARCHAR(50) NOT NULL UNIQUE
 );
@@ -65,13 +44,8 @@ CREATE TABLE authentication_sessions (
     CONSTRAINT ck_auth_session_expiry CHECK (expires_at > created_at),
     CONSTRAINT fk_auth_sessions_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
 );
--- ===================================================================
--- 2) Tá»ª ÄIá»‚N NGÃ”N NGá»® KÃ HIá»†U
--- RÃ ng buá»™c chÃ­nh:
--- - TÃªn category duy nháº¥t
--- - Má»—i tá»« (word) lÃ  duy nháº¥t trong tá»«ng category
--- - Má»—i video biáº¿n thá»ƒ khÃ´ng trÃ¹ng trong cÃ¹ng entry
--- ===================================================================
+
+
 CREATE TABLE dictionary_categories (
     category_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
@@ -96,14 +70,7 @@ CREATE TABLE dictionary_variations (
     CONSTRAINT uq_dict_variation_video UNIQUE (entry_id, video_url),
     CONSTRAINT fk_dict_variations_entry FOREIGN KEY (entry_id) REFERENCES dictionary_entries (entry_id) ON DELETE CASCADE
 );
--- ===================================================================
--- 3) KHÃ“A Há»ŒC Tá»”NG QUÃT
--- RÃ ng buá»™c chÃ­nh:
--- - visibility_status bá»‹ giá»›i háº¡n trong DRAFT/PUBLISHED/ARCHIVED
--- - module/lesson order_index must be > 0 and unique within parent scope
--- - each student can enroll only once per course
--- - progress is constrained to [0, 100]
--- ===================================================================
+
 CREATE TABLE general_course_categories (
     category_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE
@@ -170,12 +137,7 @@ CREATE TABLE comments (
     CONSTRAINT fk_comments_lesson FOREIGN KEY (lesson_id) REFERENCES general_course_lessons (lesson_id) ON DELETE CASCADE,
     CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
 );
--- ===================================================================
--- 4) MICROLEARNING
--- RÃ ng buá»™c chÃ­nh:
--- - order_index cá»§a unit/lesson/part pháº£i > 0
--- - order_index khÃ´ng trÃ¹ng trong cÃ¹ng pháº¡m vi cha
--- ===================================================================
+
 CREATE TABLE microlearning_topics (
     topic_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     title VARCHAR(150) NOT NULL,
@@ -216,13 +178,7 @@ CREATE TABLE microlearning_questions (
     correct_answer VARCHAR(255) NOT NULL,
     CONSTRAINT fk_ml_questions_part FOREIGN KEY (part_id) REFERENCES microlearning_lesson_parts (part_id) ON DELETE CASCADE
 );
--- ===================================================================
--- 5) GAMIFICATION & TÆ¯Æ NG TÃC
--- RÃ ng buá»™c chÃ­nh:
--- - streak khÃ´ng Ã¢m, highest_streak luÃ´n >= current_streak
--- - rating pháº£n há»“i náº±m trong [1, 5] hoáº·c NULL
--- - user_achievements dÃ¹ng khÃ³a chÃ­nh tá»•ng há»£p Ä‘á»ƒ trÃ¡nh trÃ¹ng thÃ nh tÃ­ch
--- ===================================================================
+
 CREATE TABLE student_streaks (
     streak_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id UUID NOT NULL UNIQUE,
@@ -274,7 +230,7 @@ CREATE TABLE notification_users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
 );
--- Chá»‰ má»¥c gá»£i Ã½ cho cá»™t khÃ³a ngoáº¡i (idempotent, cháº¡y láº·p khÃ´ng lá»—i)
+
 CREATE INDEX IF NOT EXISTS idx_users_role_id ON users (role_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON authentication_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_dict_entries_category_id ON dictionary_entries (category_id);
