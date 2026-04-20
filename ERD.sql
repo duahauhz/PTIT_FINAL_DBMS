@@ -8,9 +8,11 @@ CREATE TABLE users (
     password_hash VARCHAR(255) NOT NULL,
     email VARCHAR(100) UNIQUE,
     role_id INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    CONSTRAINT ck_users_status CHECK (status IN ('active', 'frozen')),
     CONSTRAINT fk_users_role FOREIGN KEY (role_id) REFERENCES roles (role_id) ON DELETE RESTRICT
 );
 CREATE TABLE user_profiles (
@@ -230,6 +232,51 @@ CREATE TABLE notification_users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
 );
+CREATE TABLE wallets (
+    user_id UUID PRIMARY KEY,
+    balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_wallets_balance_non_negative CHECK (balance >= 0),
+    CONSTRAINT fk_wallets_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+);
+CREATE TABLE transaction_logs (
+    transaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_wallet_user_id UUID,
+    to_wallet_user_id UUID,
+    amount NUMERIC(14, 2) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_transaction_logs_amount CHECK (amount > 0),
+    CONSTRAINT ck_transaction_logs_status CHECK (
+        status IN ('SUCCESS', 'FAILED', 'ROLLED_BACK')
+    ),
+    CONSTRAINT fk_transaction_logs_from_wallet FOREIGN KEY (from_wallet_user_id) REFERENCES wallets (user_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_transaction_logs_to_wallet FOREIGN KEY (to_wallet_user_id) REFERENCES wallets (user_id) ON DELETE RESTRICT
+);
+CREATE TABLE transaction_action_logs (
+    action_log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id UUID,
+    action_type VARCHAR(40) NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE log (
+    log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    action TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE audit_logs (
+    audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_audit_logs_status CHECK (
+        status IN ('SUCCESS', 'FAILED', 'ROLLED_BACK')
+    )
+);
 
 CREATE INDEX IF NOT EXISTS idx_users_role_id ON users (role_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON authentication_sessions (user_id);
@@ -250,5 +297,14 @@ CREATE INDEX IF NOT EXISTS idx_ml_parts_lesson_id ON microlearning_lesson_parts 
 CREATE INDEX IF NOT EXISTS idx_ml_questions_part_id ON microlearning_questions (part_id);
 CREATE INDEX IF NOT EXISTS idx_user_feedbacks_user_id ON user_feedbacks (user_id);
 CREATE INDEX IF NOT EXISTS idx_notification_users_user_id ON notification_users (user_id);
+CREATE INDEX IF NOT EXISTS idx_wallets_balance ON wallets (balance);
+CREATE INDEX IF NOT EXISTS idx_transaction_logs_created_at ON transaction_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_transaction_logs_from_wallet ON transaction_logs (from_wallet_user_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_logs_to_wallet ON transaction_logs (to_wallet_user_id);
+CREATE INDEX IF NOT EXISTS idx_tx_action_logs_created_at ON transaction_action_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_tx_action_logs_tx_id ON transaction_action_logs (transaction_id);
+CREATE INDEX IF NOT EXISTS idx_log_created_at ON log (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_run_id ON audit_logs (run_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_deleted ON users (is_deleted);
 CREATE INDEX IF NOT EXISTS idx_courses_is_deleted ON general_courses (is_deleted);

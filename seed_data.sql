@@ -18,6 +18,7 @@ INSERT INTO users (
         password_hash,
         email,
         role_id,
+        status,
         created_at,
         updated_at,
         is_deleted
@@ -32,6 +33,7 @@ VALUES (
             FROM roles
             WHERE role_name = 'ADMIN'
         ),
+        'active',
         CURRENT_TIMESTAMP - INTERVAL '45 days',
         CURRENT_TIMESTAMP - INTERVAL '45 days',
         FALSE
@@ -46,6 +48,7 @@ VALUES (
             FROM roles
             WHERE role_name = 'TEACHER'
         ),
+        'active',
         CURRENT_TIMESTAMP - INTERVAL '30 days',
         CURRENT_TIMESTAMP - INTERVAL '30 days',
         FALSE
@@ -60,6 +63,7 @@ VALUES (
             FROM roles
             WHERE role_name = 'TEACHER'
         ),
+        'active',
         CURRENT_TIMESTAMP - INTERVAL '28 days',
         CURRENT_TIMESTAMP - INTERVAL '28 days',
         FALSE
@@ -74,6 +78,7 @@ VALUES (
             FROM roles
             WHERE role_name = 'STUDENT'
         ),
+        'active',
         CURRENT_TIMESTAMP - INTERVAL '20 days',
         CURRENT_TIMESTAMP - INTERVAL '20 days',
         FALSE
@@ -88,6 +93,7 @@ VALUES (
             FROM roles
             WHERE role_name = 'STUDENT'
         ),
+        'active',
         CURRENT_TIMESTAMP - INTERVAL '18 days',
         CURRENT_TIMESTAMP - INTERVAL '18 days',
         FALSE
@@ -102,6 +108,7 @@ VALUES (
             FROM roles
             WHERE role_name = 'STUDENT'
         ),
+        'active',
         CURRENT_TIMESTAMP - INTERVAL '16 days',
         CURRENT_TIMESTAMP - INTERVAL '16 days',
         FALSE
@@ -111,6 +118,7 @@ SET username = EXCLUDED.username,
     password_hash = EXCLUDED.password_hash,
     email = EXCLUDED.email,
     role_id = EXCLUDED.role_id,
+    status = EXCLUDED.status,
     updated_at = EXCLUDED.updated_at,
     is_deleted = EXCLUDED.is_deleted;
 INSERT INTO user_profiles (
@@ -200,6 +208,21 @@ VALUES (
 UPDATE
 SET grade_level = EXCLUDED.grade_level,
     school_name = EXCLUDED.school_name;
+INSERT INTO wallets (user_id, balance, updated_at)
+SELECT u.user_id,
+       CASE
+           WHEN r.role_name = 'ADMIN' THEN 5000.00
+           WHEN r.role_name = 'TEACHER' THEN 1000.00
+           ELSE 250.00
+       END AS balance,
+       CURRENT_TIMESTAMP - INTERVAL '1 day'
+FROM users AS u
+JOIN roles AS r
+     ON r.role_id = u.role_id
+ON CONFLICT (user_id) DO
+UPDATE
+SET balance = EXCLUDED.balance,
+    updated_at = EXCLUDED.updated_at;
 INSERT INTO authentication_sessions (
         session_id,
         user_id,

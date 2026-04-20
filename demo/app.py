@@ -67,6 +67,33 @@ def get_db_connection() -> psycopg.Connection:
     return conn
 
 
+# Kiểm tra nhanh sự tồn tại của table trong schema public.
+def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) AS rel", (f"public.{table_name}",))
+        row = cur.fetchone()
+    return bool(row and row.get("rel"))
+
+
+# Kiểm tra nhanh sự tồn tại của cột trong table.
+def column_exists(conn: psycopg.Connection, table_name: str, column_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = %s
+                  AND column_name = %s
+            ) AS ok
+            """,
+            (table_name, column_name),
+        )
+        row = cur.fetchone()
+    return bool(row and row.get("ok"))
+
+
 # Ghi audit log bằng kết nối riêng để không bị mất khi transaction chính rollback.
 def write_audit_log(
     run_id: str,
@@ -106,6 +133,9 @@ def write_audit_log(
 
 # Tải dữ liệu lookup cho dropdown.
 def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
+    has_user_status = column_exists(conn, "users", "status")
+    has_wallets = table_exists(conn, "wallets")
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -145,12 +175,14 @@ def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]
         )
         course_categories = cur.fetchall()
 
+        user_status_expr = "u.status" if has_user_status else "'active'"
         cur.execute(
-            """
+            f"""
             SELECT u.user_id,
                    u.username,
                    COALESCE(up.full_name, u.username) AS full_name,
                    r.role_name,
+                   {user_status_expr} AS status,
                    u.is_deleted
             FROM users AS u
             JOIN roles AS r
@@ -178,17 +210,70 @@ def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]
         )
         lessons = cur.fetchall()
 
+        wallet_senders: List[Dict[str, Any]] = []
+        admin_wallets: List[Dict[str, Any]] = []
+        if has_wallets:
+            cur.execute(
+                f"""
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       r.role_name,
+                       {user_status_expr} AS status,
+                       w.balance
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                WHERE u.is_deleted = FALSE
+                  AND r.role_name <> 'ADMIN'
+                ORDER BY r.role_name ASC, full_name ASC
+                """
+            )
+            wallet_senders = cur.fetchall()
+
+            cur.execute(
+                f"""
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       {user_status_expr} AS status,
+                       w.balance
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                WHERE u.is_deleted = FALSE
+                  AND r.role_name = 'ADMIN'
+                ORDER BY full_name ASC
+                """
+            )
+            admin_wallets = cur.fetchall()
+
     return {
         "students": students,
         "courses": courses,
         "course_categories": course_categories,
         "users": users,
         "lessons": lessons,
+        "wallet_senders": wallet_senders,
+        "admin_wallets": admin_wallets,
     }
 
 
 # Tải snapshot các bảng nguồn để so sánh trước/sau.
 def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
+    has_user_status = column_exists(conn, "users", "status")
+    has_wallets = table_exists(conn, "wallets")
+    has_transaction_logs = table_exists(conn, "transaction_logs")
+    has_transaction_action_logs = table_exists(conn, "transaction_action_logs")
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -264,11 +349,13 @@ def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, An
         )
         comments = cur.fetchall()
 
+        user_status_expr = "u.status" if has_user_status else "'active'"
         cur.execute(
-            """
+            f"""
             SELECT u.user_id,
                    u.username,
                    r.role_name,
+                   {user_status_expr} AS status,
                    u.is_deleted,
                    u.updated_at
             FROM users AS u
@@ -294,6 +381,101 @@ def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, An
         )
         courses = cur.fetchall()
 
+        cur.execute(
+            """
+            SELECT s.user_id,
+                   u.username,
+                   s.grade_level,
+                   s.school_name
+            FROM students AS s
+            JOIN users AS u
+                 ON u.user_id = s.user_id
+            ORDER BY u.created_at DESC, u.username ASC
+            LIMIT 40
+            """
+        )
+        students = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT m.module_id,
+                   m.course_id,
+                   gc.title AS course_title,
+                   m.title AS module_title,
+                   m.order_index
+            FROM general_course_modules AS m
+            JOIN general_courses AS gc
+                 ON gc.course_id = m.course_id
+            ORDER BY gc.title ASC, m.order_index ASC
+            LIMIT 40
+            """
+        )
+        course_modules = cur.fetchall()
+
+        wallets: List[Dict[str, Any]] = []
+        if has_wallets:
+            cur.execute(
+                f"""
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       r.role_name,
+                       {user_status_expr} AS status,
+                       w.balance,
+                       w.updated_at
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                ORDER BY r.role_name ASC, full_name ASC
+                LIMIT 60
+                """
+            )
+            wallets = cur.fetchall()
+
+        transaction_logs: List[Dict[str, Any]] = []
+        if has_transaction_logs:
+            cur.execute(
+                """
+                SELECT tl.transaction_id,
+                       tl.from_wallet_user_id,
+                       fu.username AS from_username,
+                       tl.to_wallet_user_id,
+                       tu.username AS to_username,
+                       tl.amount,
+                       tl.status,
+                       tl.message,
+                       tl.created_at
+                FROM transaction_logs AS tl
+                LEFT JOIN users AS fu
+                       ON fu.user_id = tl.from_wallet_user_id
+                LEFT JOIN users AS tu
+                       ON tu.user_id = tl.to_wallet_user_id
+                ORDER BY tl.created_at DESC
+                LIMIT 60
+                """
+            )
+            transaction_logs = cur.fetchall()
+
+        transaction_action_logs: List[Dict[str, Any]] = []
+        if has_transaction_action_logs:
+            cur.execute(
+                """
+                SELECT tal.action_log_id,
+                       tal.transaction_id,
+                       tal.action_type,
+                       tal.message,
+                       tal.created_at
+                FROM transaction_action_logs AS tal
+                ORDER BY tal.created_at DESC
+                LIMIT 80
+                """
+            )
+            transaction_action_logs = cur.fetchall()
+
     return {
         "course_enrollments": enrollments,
         "student_streaks": streaks,
@@ -301,6 +483,11 @@ def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, An
         "comments": comments,
         "users": users,
         "general_courses": courses,
+        "students": students,
+        "general_course_modules": course_modules,
+        "wallets": wallets,
+        "transaction_logs": transaction_logs,
+        "transaction_action_logs": transaction_action_logs,
     }
 
 
@@ -459,6 +646,10 @@ registry = RunRegistry()
 
 SUPPORTED_ACTIONS = {
     "view_reports",
+    "trigger_updated_at",
+    "trigger_init_streak",
+    "trigger_publish_guard",
+    "transfer_to_admin",
     "search_students",
     "search_courses",
     "enroll",
@@ -473,6 +664,11 @@ ACTION_ALIASES = {
     "view_report": "view_reports",
     "reports": "view_reports",
     "report_views": "view_reports",
+    "trigger_timestamp": "trigger_updated_at",
+    "trigger_streak": "trigger_init_streak",
+    "trigger_publish": "trigger_publish_guard",
+    "transfer_money": "transfer_to_admin",
+    "wallet_transfer": "transfer_to_admin",
     "search_student": "search_students",
     "search_course": "search_courses",
     "update_course_progress": "update_progress",
@@ -498,6 +694,11 @@ RESET_BASELINE: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
 # Chụp baseline runtime để phục vụ nút reset.
 def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
+    has_user_status = column_exists(conn, "users", "status")
+    has_wallets = table_exists(conn, "wallets")
+    has_transaction_logs = table_exists(conn, "transaction_logs")
+    has_transaction_action_logs = table_exists(conn, "transaction_action_logs")
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -535,9 +736,10 @@ def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str,
         )
         streaks = cur.fetchall()
 
+        user_status_expr = ", status" if has_user_status else ""
         cur.execute(
-            """
-            SELECT user_id, is_deleted
+            f"""
+            SELECT user_id, is_deleted{user_status_expr}
             FROM users
             ORDER BY user_id ASC
             """
@@ -553,6 +755,39 @@ def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str,
         )
         courses = cur.fetchall()
 
+        wallets: List[Dict[str, Any]] = []
+        if has_wallets:
+            cur.execute(
+                """
+                SELECT user_id, balance
+                FROM wallets
+                ORDER BY user_id ASC
+                """
+            )
+            wallets = cur.fetchall()
+
+        transaction_logs: List[Dict[str, Any]] = []
+        if has_transaction_logs:
+            cur.execute(
+                """
+                SELECT transaction_id, from_wallet_user_id, to_wallet_user_id, amount, status, message, created_at
+                FROM transaction_logs
+                ORDER BY transaction_id ASC
+                """
+            )
+            transaction_logs = cur.fetchall()
+
+        transaction_action_logs: List[Dict[str, Any]] = []
+        if has_transaction_action_logs:
+            cur.execute(
+                """
+                SELECT action_log_id, transaction_id, action_type, message, created_at
+                FROM transaction_action_logs
+                ORDER BY action_log_id ASC
+                """
+            )
+            transaction_action_logs = cur.fetchall()
+
     return {
         "course_enrollments": enrollments,
         "comments": comments,
@@ -560,6 +795,9 @@ def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str,
         "student_streaks": streaks,
         "users": users,
         "general_courses": courses,
+        "wallets": wallets,
+        "transaction_logs": transaction_logs,
+        "transaction_action_logs": transaction_action_logs,
     }
 
 
@@ -567,7 +805,18 @@ def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str,
 def ensure_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     global RESET_BASELINE
     with RESET_BASELINE_LOCK:
-        if RESET_BASELINE is None:
+        refresh_needed = RESET_BASELINE is None
+        if not refresh_needed and RESET_BASELINE is not None:
+            if table_exists(conn, "wallets"):
+                baseline_wallets = RESET_BASELINE.get("wallets") or []
+                if not baseline_wallets:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT COUNT(*) AS total FROM wallets")
+                        wallet_count = cur.fetchone()["total"]
+                    if wallet_count > 0:
+                        refresh_needed = True
+
+        if refresh_needed:
             RESET_BASELINE = capture_reset_baseline(conn)
         return deepcopy(RESET_BASELINE)
 
@@ -576,8 +825,20 @@ def ensure_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str, 
 def apply_reset(conn: psycopg.Connection) -> Dict[str, Any]:
     baseline = ensure_reset_baseline(conn)
     counts: Dict[str, Any] = {}
+    has_user_status = column_exists(conn, "users", "status")
+    has_wallets = table_exists(conn, "wallets")
+    has_transaction_logs = table_exists(conn, "transaction_logs")
+    has_transaction_action_logs = table_exists(conn, "transaction_action_logs")
 
     with conn.cursor() as cur:
+        if has_transaction_action_logs:
+            cur.execute("DELETE FROM transaction_action_logs")
+            counts["deleted_transaction_action_logs"] = cur.rowcount
+
+        if has_transaction_logs:
+            cur.execute("DELETE FROM transaction_logs")
+            counts["deleted_transaction_logs"] = cur.rowcount
+
         cur.execute("DELETE FROM notification_users")
         counts["deleted_notification_users"] = cur.rowcount
 
@@ -680,14 +941,29 @@ def apply_reset(conn: psycopg.Connection) -> Dict[str, Any]:
 
         user_flags = [(row["is_deleted"], row["user_id"]) for row in baseline["users"]]
         if user_flags:
-            cur.executemany(
-                """
-                UPDATE users
-                SET is_deleted = %s
-                WHERE user_id = %s
-                """,
-                user_flags,
-            )
+            if has_user_status:
+                user_flags_with_status = [
+                    (row["is_deleted"], row.get("status", "active"), row["user_id"])
+                    for row in baseline["users"]
+                ]
+                cur.executemany(
+                    """
+                    UPDATE users
+                    SET is_deleted = %s,
+                        status = %s
+                    WHERE user_id = %s
+                    """,
+                    user_flags_with_status,
+                )
+            else:
+                cur.executemany(
+                    """
+                    UPDATE users
+                    SET is_deleted = %s
+                    WHERE user_id = %s
+                    """,
+                    user_flags,
+                )
         counts["restored_users_is_deleted"] = len(user_flags)
 
         course_flags = [(row["is_deleted"], row["course_id"]) for row in baseline["general_courses"]]
@@ -701,6 +977,77 @@ def apply_reset(conn: psycopg.Connection) -> Dict[str, Any]:
                 course_flags,
             )
         counts["restored_courses_is_deleted"] = len(course_flags)
+
+        if has_wallets:
+            wallet_rows = [(row["balance"], row["user_id"]) for row in baseline.get("wallets", [])]
+            if wallet_rows:
+                cur.executemany(
+                    """
+                    UPDATE wallets
+                    SET balance = %s
+                    WHERE user_id = %s
+                    """,
+                    wallet_rows,
+                )
+            counts["restored_wallets_balance"] = len(wallet_rows)
+
+        if has_transaction_logs:
+            tx_rows = [
+                (
+                    row["transaction_id"],
+                    row["from_wallet_user_id"],
+                    row["to_wallet_user_id"],
+                    row["amount"],
+                    row["status"],
+                    row["message"],
+                    row["created_at"],
+                )
+                for row in baseline.get("transaction_logs", [])
+            ]
+            if tx_rows:
+                cur.executemany(
+                    """
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message,
+                        created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    tx_rows,
+                )
+            counts["restored_transaction_logs"] = len(tx_rows)
+
+        if has_transaction_action_logs:
+            tx_action_rows = [
+                (
+                    row["action_log_id"],
+                    row["transaction_id"],
+                    row["action_type"],
+                    row["message"],
+                    row["created_at"],
+                )
+                for row in baseline.get("transaction_action_logs", [])
+            ]
+            if tx_action_rows:
+                cur.executemany(
+                    """
+                    INSERT INTO transaction_action_logs (
+                        action_log_id,
+                        transaction_id,
+                        action_type,
+                        message,
+                        created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    tx_action_rows,
+                )
+            counts["restored_transaction_action_logs"] = len(tx_action_rows)
 
     conn.commit()
     return counts
@@ -783,6 +1130,434 @@ def emit_sql(run: RunState, step_key: str, lines: list) -> None:
         registry.append_event(run, "sql_log", {"line": line, "step_key": step_key})
         print(f"[emit_sql]   line {i}: {line[:60]}", file=sys.stderr, flush=True)
         time.sleep(0.06)  # Nghỉ ngắn giữa 2 dòng log.
+
+
+# Đảm bảo schema cho demo chuyển tiền tồn tại trước khi chạy pipeline.
+def ensure_transfer_entities(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'")
+        cur.execute("UPDATE users SET status = 'active' WHERE status IS NULL")
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'ck_users_status'
+                ) THEN
+                    ALTER TABLE users
+                        ADD CONSTRAINT ck_users_status
+                        CHECK (status IN ('active', 'frozen'));
+                END IF;
+            END;
+            $$;
+            """
+        )
+        cur.execute("ALTER TABLE users ALTER COLUMN status SET NOT NULL")
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wallets (
+                user_id UUID PRIMARY KEY,
+                balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_wallets_balance_non_negative CHECK (balance >= 0),
+                CONSTRAINT fk_wallets_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_logs (
+                transaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                from_wallet_user_id UUID,
+                to_wallet_user_id UUID,
+                amount NUMERIC(14, 2) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_transaction_logs_amount CHECK (amount > 0),
+                CONSTRAINT ck_transaction_logs_status CHECK (
+                    status IN ('SUCCESS', 'FAILED', 'ROLLED_BACK')
+                ),
+                CONSTRAINT fk_transaction_logs_from_wallet FOREIGN KEY (from_wallet_user_id) REFERENCES wallets (user_id) ON DELETE RESTRICT,
+                CONSTRAINT fk_transaction_logs_to_wallet FOREIGN KEY (to_wallet_user_id) REFERENCES wallets (user_id) ON DELETE RESTRICT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_action_logs (
+                action_log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                transaction_id UUID,
+                action_type VARCHAR(40) NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE transaction_action_logs
+                DROP CONSTRAINT IF EXISTS fk_tx_action_logs_transaction
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_wallets_balance ON wallets (balance)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_transaction_logs_created_at ON transaction_logs (created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_transaction_logs_from_wallet ON transaction_logs (from_wallet_user_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_transaction_logs_to_wallet ON transaction_logs (to_wallet_user_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tx_action_logs_created_at ON transaction_action_logs (created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tx_action_logs_tx_id ON transaction_action_logs (transaction_id)")
+
+        cur.execute(
+            """
+            INSERT INTO wallets (user_id, balance)
+            SELECT u.user_id,
+                   CASE
+                       WHEN r.role_name = 'ADMIN' THEN 5000.00
+                       WHEN r.role_name = 'TEACHER' THEN 1000.00
+                       ELSE 250.00
+                   END AS default_balance
+            FROM users AS u
+            JOIN roles AS r
+                 ON r.role_id = u.role_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM wallets AS w
+                WHERE w.user_id = u.user_id
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION fn_transfer_to_admin_wallet(
+                p_from_user_id UUID,
+                p_amount NUMERIC
+            )
+            RETURNS TABLE (
+                tx_status VARCHAR(20),
+                tx_message TEXT,
+                tx_id UUID,
+                from_balance_after NUMERIC(14, 2),
+                admin_balance_after NUMERIC(14, 2)
+            )
+            LANGUAGE plpgsql
+            AS $$
+            DECLARE
+                v_tx_id UUID := gen_random_uuid();
+                v_message TEXT;
+                v_from_balance NUMERIC(14, 2);
+                v_from_status VARCHAR(20);
+                v_from_role VARCHAR(50);
+                v_admin_user_id UUID;
+                v_admin_balance NUMERIC(14, 2);
+                v_admin_status VARCHAR(20);
+            BEGIN
+                INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                VALUES (v_tx_id, 'BEGIN', FORMAT('START transfer from=%s amount=%s', p_from_user_id, p_amount));
+
+                IF p_from_user_id IS NULL THEN
+                    v_message := 'Nguon chuyen tien khong duoc NULL.';
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                IF p_amount IS NULL OR p_amount <= 0 THEN
+                    v_message := FORMAT('So tien khong hop le: %s', COALESCE(p_amount::TEXT, 'NULL'));
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                VALUES (v_tx_id, 'CHECK_SOURCE', FORMAT('Kiem tra vi nguon user_id=%s', p_from_user_id));
+
+                SELECT w.balance,
+                       u.status,
+                       r.role_name
+                INTO v_from_balance,
+                     v_from_status,
+                     v_from_role
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                WHERE w.user_id = p_from_user_id
+                  AND u.is_deleted = FALSE
+                FOR UPDATE;
+
+                IF NOT FOUND THEN
+                    v_message := FORMAT('Vi nguon %s khong ton tai hoac user da bi xoa mem.', p_from_user_id);
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        NULL,
+                        p_amount,
+                        'FAILED',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                IF v_from_role = 'ADMIN' THEN
+                    v_message := 'Vi nguon khong duoc la ADMIN. Kich ban chi cho phep hoc vien/giao vien nop ve vi admin.';
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        p_from_user_id,
+                        p_amount,
+                        'FAILED',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                IF v_from_status <> 'active' THEN
+                    v_message := FORMAT('Tai khoan nguon %s dang %s, khong the chuyen tien.', p_from_user_id, v_from_status);
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        NULL,
+                        p_amount,
+                        'FAILED',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                IF v_from_balance < p_amount THEN
+                    v_message := FORMAT('So du khong du. Hien co=%s, yeu cau=%s.', v_from_balance, p_amount);
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        NULL,
+                        p_amount,
+                        'FAILED',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                VALUES (v_tx_id, 'CHECK_DESTINATION', 'Tim vi ADMIN de nhan tien');
+
+                SELECT w.user_id,
+                       w.balance,
+                       u.status
+                INTO v_admin_user_id,
+                     v_admin_balance,
+                     v_admin_status
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                WHERE r.role_name = 'ADMIN'
+                  AND u.is_deleted = FALSE
+                ORDER BY u.created_at ASC
+                LIMIT 1
+                FOR UPDATE;
+
+                IF v_admin_user_id IS NULL THEN
+                    v_message := 'Khong tim thay vi ADMIN de nhan tien.';
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        NULL,
+                        p_amount,
+                        'FAILED',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                IF v_admin_status <> 'active' THEN
+                    v_message := FORMAT('Tai khoan ADMIN (%s) dang %s, khong the nhan tien.', v_admin_user_id, v_admin_status);
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        v_admin_user_id,
+                        p_amount,
+                        'FAILED',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+                END IF;
+
+                UPDATE wallets
+                SET balance = balance - p_amount
+                WHERE user_id = p_from_user_id;
+
+                UPDATE wallets
+                SET balance = balance + p_amount
+                WHERE user_id = v_admin_user_id;
+
+                SELECT balance
+                INTO v_from_balance
+                FROM wallets
+                WHERE user_id = p_from_user_id;
+
+                SELECT balance
+                INTO v_admin_balance
+                FROM wallets
+                WHERE user_id = v_admin_user_id;
+
+                v_message := FORMAT(
+                    'Chuyen tien thanh cong: %s tu %s sang vi ADMIN %s.',
+                    p_amount,
+                    p_from_user_id,
+                    v_admin_user_id
+                );
+
+                INSERT INTO transaction_logs (
+                    transaction_id,
+                    from_wallet_user_id,
+                    to_wallet_user_id,
+                    amount,
+                    status,
+                    message
+                )
+                VALUES (
+                    v_tx_id,
+                    p_from_user_id,
+                    v_admin_user_id,
+                    p_amount,
+                    'SUCCESS',
+                    v_message
+                );
+
+                INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                VALUES (v_tx_id, 'COMMIT', v_message);
+
+                RETURN QUERY
+                SELECT 'SUCCESS'::VARCHAR, v_message, v_tx_id, v_from_balance, v_admin_balance;
+                RETURN;
+            EXCEPTION
+                WHEN OTHERS THEN
+                    v_message := FORMAT('LOI HE THONG: %s', SQLERRM);
+                    INSERT INTO transaction_action_logs (transaction_id, action_type, message)
+                    VALUES (v_tx_id, 'ROLLBACK', v_message);
+
+                    INSERT INTO transaction_logs (
+                        transaction_id,
+                        from_wallet_user_id,
+                        to_wallet_user_id,
+                        amount,
+                        status,
+                        message
+                    )
+                    VALUES (
+                        v_tx_id,
+                        p_from_user_id,
+                        v_admin_user_id,
+                        GREATEST(COALESCE(p_amount, 0), 0.01),
+                        'ROLLED_BACK',
+                        v_message
+                    );
+
+                    RETURN QUERY
+                    SELECT 'ERROR'::VARCHAR, v_message, v_tx_id, NULL::NUMERIC(14, 2), NULL::NUMERIC(14, 2);
+                    RETURN;
+            END;
+            $$;
+            """
+        )
+
+    conn.commit()
 
 
 # Kịch bản: enroll và kiểm tra trigger streak.
@@ -1313,6 +2088,1151 @@ def run_view_reports_pipeline(run: RunState, conn: psycopg.Connection, context: 
         step_key="complete",
         step_name="Complete",
         sql_label="Finalize run result",
+        fn=step_complete,
+    )
+
+
+# Kịch bản: gọi hàm tìm học viên.
+def run_trigger_updated_at_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
+    payload = run.payload
+
+    def step_validate() -> Dict[str, Any]:
+        user_id = validate_uuid(payload.get("user_id"), "user_id")
+        new_username = str(payload.get("new_username") or "").strip()
+        if not new_username:
+            new_username = f"trigger_user_{int(time.time())}"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id, username, updated_at
+                FROM users
+                WHERE user_id = %s::uuid
+                """,
+                (user_id,),
+            )
+            user_before = cur.fetchone()
+        if not user_before:
+            raise ValueError("user_id khong ton tai.")
+
+        conn.commit()
+        context["validated"] = {"user_id": user_id, "new_username": new_username}
+        context["metrics_before"] = {"user_before": user_before}
+        return {"user_before": user_before, "new_username": new_username}
+
+    def step_execute() -> Dict[str, Any]:
+        data = context["validated"]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE OR REPLACE FUNCTION fn_update_timestamp()
+                RETURNS TRIGGER
+                LANGUAGE plpgsql
+                AS $$
+                BEGIN
+                    NEW.updated_at = CURRENT_TIMESTAMP;
+                    RETURN NEW;
+                END;
+                $$;
+                """
+            )
+            cur.execute("DROP TRIGGER IF EXISTS trg_users_update_timestamp ON users")
+            cur.execute("DROP TRIGGER IF EXISTS trg_auto_update_users_timestamp ON users")
+            cur.execute(
+                """
+                CREATE TRIGGER trg_auto_update_users_timestamp
+                BEFORE UPDATE ON users
+                FOR EACH ROW
+                EXECUTE FUNCTION fn_update_timestamp()
+                """
+            )
+            cur.execute(
+                """
+                UPDATE users
+                SET username = %s
+                WHERE user_id = %s::uuid
+                RETURNING user_id, username, updated_at
+                """,
+                (data["new_username"], data["user_id"]),
+            )
+            user_after = cur.fetchone()
+        if not user_after:
+            raise ValueError("Khong update duoc user.")
+        conn.commit()
+        context["action_data"] = {"user_after_update_timestamp": user_after}
+        return {"user_after_update_timestamp": user_after}
+
+    def step_trigger_check() -> Dict[str, Any]:
+        user_before = context["metrics_before"]["user_before"]
+        user_after = context["action_data"]["user_after_update_timestamp"]
+        return {
+            "updated_at_before": user_before["updated_at"],
+            "updated_at_after": user_after["updated_at"],
+            "updated_at_changed": user_before["updated_at"] != user_after["updated_at"],
+            "username_before": user_before["username"],
+            "username_after": user_after["username"],
+        }
+
+    def step_refresh_tables() -> Dict[str, Any]:
+        tables_after = fetch_source_tables(conn)
+        context["tables_after"] = tables_after
+        return {name: len(rows) for name, rows in tables_after.items()}
+
+    def step_refresh_views() -> Dict[str, Any]:
+        views_after = fetch_reporting_views(conn)
+        context["views_after"] = views_after
+        return {name: len(rows) for name, rows in views_after.items()}
+
+    def step_complete() -> Dict[str, Any]:
+        context["message"] = "SESSION 1 done: trigger timestamp da cap nhat updated_at."
+        return {"status": "done"}
+
+    v = context.get("validated") or {}
+    uid = v.get("user_id", "?")
+    new_name = v.get("new_username", "?")
+
+    execute_step(
+        run,
+        step_index=1,
+        step_key="validate_input",
+        step_name="SESSION 1 - Validate input",
+        sql_label="Validate user_id + username moi",
+        sql_lines=[
+            "-- SESSION 1: AUTOMATION TRIGGER (UPDATED_AT)",
+            f"SELECT user_id, username, updated_at FROM users WHERE user_id = '{uid}'::uuid;",
+            f"-- new_username = '{new_name}'",
+        ],
+        fn=step_validate,
+    )
+    uid = context["validated"]["user_id"]
+    new_name = context["validated"]["new_username"]
+    execute_step(
+        run,
+        step_index=2,
+        step_key="execute_procedure",
+        step_name="Update users.username",
+        sql_label="UPDATE users ... RETURNING",
+        sql_lines=[
+            "CREATE OR REPLACE FUNCTION fn_update_timestamp() RETURNS TRIGGER ...;",
+            "DROP TRIGGER IF EXISTS trg_users_update_timestamp ON users;",
+            "CREATE TRIGGER trg_auto_update_users_timestamp BEFORE UPDATE ON users ...;",
+            f"UPDATE users SET username = '{new_name}' WHERE user_id = '{uid}'::uuid;",
+            f"SELECT user_id, username, updated_at FROM users WHERE user_id = '{uid}'::uuid;",
+        ],
+        fn=step_execute,
+    )
+    execute_step(
+        run,
+        step_index=3,
+        step_key="check_trigger_side_effects",
+        step_name="Trigger check: trg_auto_update_users_timestamp",
+        sql_label="Compare updated_at before/after",
+        sql_lines=[
+            "-- Trigger ngam fn_update_timestamp da chay BEFORE UPDATE",
+            f"SELECT user_id, username, updated_at FROM users WHERE user_id = '{uid}'::uuid;",
+        ],
+        fn=step_trigger_check,
+    )
+    execute_step(
+        run,
+        step_index=4,
+        step_key="refresh_source_tables",
+        step_name="Refresh source tables",
+        sql_label="SELECT snapshot source tables",
+        fn=step_refresh_tables,
+    )
+    execute_step(
+        run,
+        step_index=5,
+        step_key="refresh_reporting_views",
+        step_name="Refresh reporting views",
+        sql_label="Reload 3 reporting views",
+        fn=step_refresh_views,
+    )
+    execute_step(
+        run,
+        step_index=6,
+        step_key="complete",
+        step_name="Complete",
+        sql_label="Finalize run result",
+        fn=step_complete,
+    )
+
+
+def run_trigger_init_streak_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
+    payload = run.payload
+
+    def step_validate() -> Dict[str, Any]:
+        raw_user_id = payload.get("user_id") or "30000000-0000-0000-0000-000000000599"
+        user_id = validate_uuid(raw_user_id, "user_id")
+        username = str(payload.get("username") or "demo_new_user_01").strip()
+        email = str(payload.get("email") or "newuser@local_01").strip()
+        grade_level = str(payload.get("grade_level") or "Grade 10").strip()
+        school_name = str(payload.get("school_name") or "Demo High School").strip()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT role_id FROM roles WHERE role_name = 'STUDENT' ORDER BY role_id ASC LIMIT 1"
+            )
+            role_row = cur.fetchone()
+            if not role_row:
+                raise ValueError("Khong tim thay role STUDENT.")
+            role_id = role_row["role_id"]
+
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM users WHERE user_id = %s::uuid",
+                (user_id,),
+            )
+            user_exists = cur.fetchone()["total"] > 0
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM students WHERE user_id = %s::uuid",
+                (user_id,),
+            )
+            student_exists = cur.fetchone()["total"] > 0
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM student_streaks WHERE student_id = %s::uuid",
+                (user_id,),
+            )
+            streak_exists = cur.fetchone()["total"] > 0
+
+        conn.commit()
+        context["validated"] = {
+            "user_id": user_id,
+            "username": username,
+            "email": email,
+            "role_id": role_id,
+            "grade_level": grade_level,
+            "school_name": school_name,
+        }
+        context["metrics_before"] = {
+            "user_exists": user_exists,
+            "student_exists": student_exists,
+            "streak_exists": streak_exists,
+        }
+        return {
+            "user_id": user_id,
+            "username": username,
+            "email": email,
+            "user_exists": user_exists,
+            "student_exists": student_exists,
+            "streak_exists": streak_exists,
+        }
+
+    def step_execute() -> Dict[str, Any]:
+        data = context["validated"]
+        has_wallets = table_exists(conn, "wallets")
+        has_transaction_logs = table_exists(conn, "transaction_logs")
+        has_transaction_action_logs = table_exists(conn, "transaction_action_logs")
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE OR REPLACE FUNCTION fn_init_student_streak()
+                RETURNS TRIGGER
+                LANGUAGE plpgsql
+                AS $$
+                BEGIN
+                    INSERT INTO student_streaks (
+                        student_id, current_streak, highest_streak, last_activity_date
+                    )
+                    VALUES (NEW.user_id, 0, 0, NULL)
+                    ON CONFLICT (student_id) DO NOTHING;
+                    RETURN NEW;
+                END;
+                $$;
+                """
+            )
+            cur.execute("DROP TRIGGER IF EXISTS trg_after_insert_student ON students")
+            cur.execute(
+                """
+                CREATE TRIGGER trg_after_insert_student
+                AFTER INSERT ON students
+                FOR EACH ROW
+                EXECUTE FUNCTION fn_init_student_streak()
+                """
+            )
+
+            if has_transaction_action_logs and has_transaction_logs:
+                cur.execute(
+                    """
+                    DELETE FROM transaction_action_logs
+                    WHERE transaction_id IN (
+                        SELECT transaction_id
+                        FROM transaction_logs
+                        WHERE from_wallet_user_id = %s::uuid
+                           OR to_wallet_user_id = %s::uuid
+                    )
+                    """,
+                    (data["user_id"], data["user_id"]),
+                )
+
+            if has_transaction_logs:
+                cur.execute(
+                    """
+                    DELETE FROM transaction_logs
+                    WHERE from_wallet_user_id = %s::uuid
+                       OR to_wallet_user_id = %s::uuid
+                    """,
+                    (data["user_id"], data["user_id"]),
+                )
+
+            if has_wallets:
+                cur.execute("DELETE FROM wallets WHERE user_id = %s::uuid", (data["user_id"],))
+
+            cur.execute("DELETE FROM student_streaks WHERE student_id = %s::uuid", (data["user_id"],))
+            cur.execute("DELETE FROM students WHERE user_id = %s::uuid", (data["user_id"],))
+            cur.execute("DELETE FROM users WHERE user_id = %s::uuid", (data["user_id"],))
+
+            cur.execute(
+                """
+                INSERT INTO users (user_id, username, password_hash, email, role_id)
+                VALUES (%s::uuid, %s, %s, %s, %s)
+                """,
+                (data["user_id"], data["username"], "hash123", data["email"], data["role_id"]),
+            )
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM student_streaks WHERE student_id = %s::uuid",
+                (data["user_id"],),
+            )
+            streak_before_insert_student = cur.fetchone()["total"]
+
+            cur.execute(
+                """
+                INSERT INTO students (user_id, grade_level, school_name)
+                VALUES (%s::uuid, %s, %s)
+                """,
+                (data["user_id"], data["grade_level"], data["school_name"]),
+            )
+            cur.execute(
+                """
+                SELECT student_id, current_streak, highest_streak, last_activity_date
+                FROM student_streaks
+                WHERE student_id = %s::uuid
+                """,
+                (data["user_id"],),
+            )
+            streak_after = cur.fetchone()
+
+        conn.commit()
+        context["action_data"] = {
+            "demo_student_created": {
+                "user_id": data["user_id"],
+                "username": data["username"],
+                "email": data["email"],
+                "grade_level": data["grade_level"],
+                "school_name": data["school_name"],
+            },
+            "streak_before_insert_student": streak_before_insert_student,
+            "streak_after_insert_student": streak_after,
+        }
+        return {
+            "streak_before_insert_student": streak_before_insert_student,
+            "streak_after_insert_student": streak_after,
+        }
+
+    def step_trigger_check() -> Dict[str, Any]:
+        data = context["validated"]
+        streak_after = context["action_data"]["streak_after_insert_student"]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT action, created_at
+                FROM log
+                WHERE action ILIKE %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (f"%trg_after_insert_student%{data['user_id']}%",),
+            )
+            trigger_log = cur.fetchone()
+        conn.commit()
+        return {
+            "streak_created_by_trigger": bool(streak_after),
+            "streak_after_insert_student": streak_after,
+            "trigger_log": trigger_log,
+        }
+
+    def step_refresh_tables() -> Dict[str, Any]:
+        tables_after = fetch_source_tables(conn)
+        context["tables_after"] = tables_after
+        return {name: len(rows) for name, rows in tables_after.items()}
+
+    def step_refresh_views() -> Dict[str, Any]:
+        views_after = fetch_reporting_views(conn)
+        context["views_after"] = views_after
+        return {name: len(rows) for name, rows in views_after.items()}
+
+    def step_complete() -> Dict[str, Any]:
+        context["message"] = "SESSION 2 done: trigger init streak da tao student_streaks tu dong."
+        return {"status": "done"}
+
+    v = context.get("validated") or {}
+    uid = v.get("user_id", "?")
+    uname = v.get("username", "?")
+    email = v.get("email", "?")
+
+    execute_step(
+        run,
+        step_index=1,
+        step_key="validate_input",
+        step_name="SESSION 2 - Validate input",
+        sql_label="Prepare demo user/student",
+        sql_lines=[
+            "-- SESSION 2: DATA INTEGRITY TRIGGER (INIT STREAK)",
+            f"-- demo_user_id = '{uid}'",
+            f"-- username = '{uname}', email = '{email}'",
+            "SELECT role_id FROM roles WHERE role_name = 'STUDENT' LIMIT 1;",
+        ],
+        fn=step_validate,
+    )
+    uid = context["validated"]["user_id"]
+    uname = context["validated"]["username"]
+    email = context["validated"]["email"]
+    grade = context["validated"]["grade_level"]
+    school = context["validated"]["school_name"]
+    execute_step(
+        run,
+        step_index=2,
+        step_key="execute_procedure",
+        step_name="Insert users + students",
+        sql_label="INSERT users -> INSERT students",
+        sql_lines=[
+            "CREATE OR REPLACE FUNCTION fn_init_student_streak() RETURNS TRIGGER ...;",
+            "DROP TRIGGER IF EXISTS trg_after_insert_student ON students;",
+            "CREATE TRIGGER trg_after_insert_student AFTER INSERT ON students ...;",
+            f"DELETE FROM student_streaks WHERE student_id = '{uid}'::uuid;",
+            f"DELETE FROM students WHERE user_id = '{uid}'::uuid;",
+            f"DELETE FROM users WHERE user_id = '{uid}'::uuid;",
+            f"INSERT INTO users (user_id, username, password_hash, email, role_id)",
+            f"VALUES ('{uid}'::uuid, '{uname}', 'hash123', '{email}', (SELECT role_id FROM roles WHERE role_name = 'STUDENT'));",
+            f"INSERT INTO students (user_id, grade_level, school_name)",
+            f"VALUES ('{uid}'::uuid, '{grade}', '{school}');",
+        ],
+        fn=step_execute,
+    )
+    execute_step(
+        run,
+        step_index=3,
+        step_key="check_trigger_side_effects",
+        step_name="Trigger check: trg_after_insert_student",
+        sql_label="Verify student_streaks auto-created",
+        sql_lines=[
+            "-- Trigger ngam fn_init_student_streak da chay AFTER INSERT ON students",
+            f"SELECT student_id, current_streak, highest_streak, last_activity_date",
+            f"  FROM student_streaks WHERE student_id = '{uid}'::uuid;",
+        ],
+        fn=step_trigger_check,
+    )
+    execute_step(
+        run,
+        step_index=4,
+        step_key="refresh_source_tables",
+        step_name="Refresh source tables",
+        sql_label="SELECT snapshot source tables",
+        fn=step_refresh_tables,
+    )
+    execute_step(
+        run,
+        step_index=5,
+        step_key="refresh_reporting_views",
+        step_name="Refresh reporting views",
+        sql_label="Reload 3 reporting views",
+        fn=step_refresh_views,
+    )
+    execute_step(
+        run,
+        step_index=6,
+        step_key="complete",
+        step_name="Complete",
+        sql_label="Finalize run result",
+        fn=step_complete,
+    )
+
+
+def run_trigger_publish_guard_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
+    payload = run.payload
+
+    def step_validate() -> Dict[str, Any]:
+        course_id = validate_uuid(payload.get("course_id") or "40000000-0000-0000-0000-000000000678", "course_id")
+        module_id = validate_uuid(payload.get("module_id") or "41000000-0000-0000-0000-000000000999", "module_id")
+        title = str(payload.get("course_title") or "Khoa hoc Test Trigger").strip()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.user_id
+                FROM teachers AS t
+                JOIN users AS u
+                     ON u.user_id = t.user_id
+                WHERE u.is_deleted = FALSE
+                ORDER BY u.created_at ASC
+                LIMIT 1
+                """
+            )
+            teacher_row = cur.fetchone()
+            if not teacher_row:
+                raise ValueError("Khong co teacher de demo publish trigger.")
+            teacher_id = teacher_row["user_id"]
+
+            cur.execute(
+                """
+                SELECT category_id
+                FROM general_course_categories
+                ORDER BY category_id ASC
+                LIMIT 1
+                """
+            )
+            category_row = cur.fetchone()
+            if not category_row:
+                raise ValueError("Khong co category de tao khoa hoc demo.")
+            category_id = category_row["category_id"]
+
+            cur.execute(
+                """
+                SELECT course_id, title, visibility_status, updated_at
+                FROM general_courses
+                WHERE course_id = %s::uuid
+                """,
+                (course_id,),
+            )
+            course_before = cur.fetchone()
+
+        conn.commit()
+        context["validated"] = {
+            "course_id": course_id,
+            "module_id": module_id,
+            "course_title": title,
+            "teacher_id": teacher_id,
+            "category_id": category_id,
+        }
+        context["metrics_before"] = {"course_before": course_before}
+        return {
+            "course_id": course_id,
+            "module_id": module_id,
+            "teacher_id": teacher_id,
+            "category_id": category_id,
+            "course_before": course_before,
+        }
+
+    def step_execute() -> Dict[str, Any]:
+        data = context["validated"]
+        blocked_error: Optional[str] = None
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE OR REPLACE FUNCTION fn_validate_course_publish()
+                RETURNS TRIGGER
+                LANGUAGE plpgsql
+                AS $$
+                DECLARE
+                    module_count INTEGER;
+                BEGIN
+                    IF NEW.visibility_status = 'PUBLISHED'
+                       AND COALESCE(OLD.visibility_status, '') <> 'PUBLISHED' THEN
+                        SELECT COUNT(*)
+                        INTO module_count
+                        FROM general_course_modules
+                        WHERE course_id = NEW.course_id;
+
+                        IF module_count = 0 THEN
+                            RAISE EXCEPTION
+                                'LOI NGHIEP VU: Khong the publish khoa hoc "%" vi chua co module nao.',
+                                NEW.title;
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$;
+                """
+            )
+            cur.execute("DROP TRIGGER IF EXISTS trg_before_publish_course ON general_courses")
+            cur.execute(
+                """
+                CREATE TRIGGER trg_before_publish_course
+                BEFORE UPDATE OF visibility_status ON general_courses
+                FOR EACH ROW
+                EXECUTE FUNCTION fn_validate_course_publish()
+                """
+            )
+
+            cur.execute(
+                """
+                INSERT INTO general_courses (
+                    course_id, teacher_id, category_id, title, visibility_status, is_deleted
+                )
+                VALUES (%s::uuid, %s::uuid, %s, %s, 'DRAFT', FALSE)
+                ON CONFLICT (course_id) DO UPDATE
+                SET teacher_id = EXCLUDED.teacher_id,
+                    category_id = EXCLUDED.category_id,
+                    title = EXCLUDED.title,
+                    visibility_status = 'DRAFT',
+                    is_deleted = FALSE
+                """,
+                (
+                    data["course_id"],
+                    data["teacher_id"],
+                    data["category_id"],
+                    data["course_title"],
+                ),
+            )
+
+            cur.execute(
+                "DELETE FROM general_course_modules WHERE course_id = %s::uuid",
+                (data["course_id"],),
+            )
+
+            cur.execute("SAVEPOINT sp_publish_guard_block")
+            try:
+                cur.execute(
+                    """
+                    UPDATE general_courses
+                    SET visibility_status = 'PUBLISHED'
+                    WHERE course_id = %s::uuid
+                    """,
+                    (data["course_id"],),
+                )
+            except Exception as exc:
+                blocked_error = str(exc)
+                cur.execute("ROLLBACK TO SAVEPOINT sp_publish_guard_block")
+            finally:
+                cur.execute("RELEASE SAVEPOINT sp_publish_guard_block")
+
+            cur.execute(
+                """
+                SELECT course_id, title, visibility_status, updated_at
+                FROM general_courses
+                WHERE course_id = %s::uuid
+                """,
+                (data["course_id"],),
+            )
+            course_after_block_attempt = cur.fetchone()
+
+            if blocked_error is None:
+                raise ValueError(
+                    "Trigger trg_before_publish_course khong chan duoc publish khi chua co module."
+                )
+
+            cur.execute(
+                """
+                INSERT INTO general_course_modules (
+                    module_id, course_id, title, order_index
+                )
+                VALUES (%s::uuid, %s::uuid, %s, 1)
+                ON CONFLICT (module_id) DO UPDATE
+                SET course_id = EXCLUDED.course_id,
+                    title = EXCLUDED.title,
+                    order_index = EXCLUDED.order_index
+                """,
+                (data["module_id"], data["course_id"], "Module 1: Mo dau"),
+            )
+
+            cur.execute(
+                """
+                UPDATE general_courses
+                SET visibility_status = 'PUBLISHED'
+                WHERE course_id = %s::uuid
+                """,
+                (data["course_id"],),
+            )
+
+            cur.execute(
+                """
+                SELECT course_id, title, visibility_status, updated_at
+                FROM general_courses
+                WHERE course_id = %s::uuid
+                """,
+                (data["course_id"],),
+            )
+            course_after_publish = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM general_course_modules
+                WHERE course_id = %s::uuid
+                """,
+                (data["course_id"],),
+            )
+            module_count = cur.fetchone()["total"]
+
+        conn.commit()
+        context["action_data"] = {
+            "blocked_publish_error": blocked_error,
+            "course_after_block_attempt": course_after_block_attempt,
+            "course_after_publish": course_after_publish,
+            "module_count": module_count,
+        }
+        return {
+            "blocked_publish_error": blocked_error,
+            "course_after_block_attempt": course_after_block_attempt,
+            "course_after_publish": course_after_publish,
+            "module_count": module_count,
+        }
+
+    def step_trigger_check() -> Dict[str, Any]:
+        data = context["validated"]
+        blocked_error = context["action_data"]["blocked_publish_error"]
+        course_after_block = context["action_data"]["course_after_block_attempt"]
+        course_after_publish = context["action_data"]["course_after_publish"]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT action, created_at
+                FROM log
+                WHERE action ILIKE %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (f"%trg_before_publish_course%{data['course_id']}%",),
+            )
+            trigger_log = cur.fetchone()
+        conn.commit()
+        return {
+            "blocked_error_present": bool(blocked_error),
+            "status_after_block_attempt": None if not course_after_block else course_after_block["visibility_status"],
+            "status_after_valid_publish": None if not course_after_publish else course_after_publish["visibility_status"],
+            "updated_at_after_valid_publish": None if not course_after_publish else course_after_publish["updated_at"],
+            "trigger_log": trigger_log,
+        }
+
+    def step_refresh_tables() -> Dict[str, Any]:
+        tables_after = fetch_source_tables(conn)
+        context["tables_after"] = tables_after
+        return {name: len(rows) for name, rows in tables_after.items()}
+
+    def step_refresh_views() -> Dict[str, Any]:
+        views_after = fetch_reporting_views(conn)
+        context["views_after"] = views_after
+        return {name: len(rows) for name, rows in views_after.items()}
+
+    def step_complete() -> Dict[str, Any]:
+        context["message"] = "SESSION 3 done: trigger publish guard chan rong va cho phep khi da co module."
+        return {"status": "done"}
+
+    v = context.get("validated") or {}
+    cid = v.get("course_id", "?")
+    mid = v.get("module_id", "?")
+    title = v.get("course_title", "Khoa hoc Test Trigger")
+
+    execute_step(
+        run,
+        step_index=1,
+        step_key="validate_input",
+        step_name="SESSION 3 - Validate context",
+        sql_label="Resolve teacher/category + demo IDs",
+        sql_lines=[
+            "-- SESSION 3: BUSINESS RULE TRIGGER (PUBLISH GUARD)",
+            f"-- demo_course_id = '{cid}', demo_module_id = '{mid}'",
+            f"-- demo_course_title = '{title}'",
+            "SELECT t.user_id FROM teachers t JOIN users u ON u.user_id=t.user_id WHERE u.is_deleted=FALSE LIMIT 1;",
+            "SELECT category_id FROM general_course_categories ORDER BY category_id ASC LIMIT 1;",
+        ],
+        fn=step_validate,
+    )
+    cid = context["validated"]["course_id"]
+    mid = context["validated"]["module_id"]
+    title = context["validated"]["course_title"]
+    execute_step(
+        run,
+        step_index=2,
+        step_key="execute_procedure",
+        step_name="Draft -> blocked publish -> add module -> publish",
+        sql_label="Demonstrate trg_before_publish_course",
+        sql_lines=[
+            "CREATE OR REPLACE FUNCTION fn_validate_course_publish() RETURNS TRIGGER ...;",
+            "DROP TRIGGER IF EXISTS trg_before_publish_course ON general_courses;",
+            "CREATE TRIGGER trg_before_publish_course BEFORE UPDATE OF visibility_status ON general_courses ...;",
+            f"INSERT INTO general_courses (..., course_id='{cid}', title='{title}', visibility_status='DRAFT') ...;",
+            f"DELETE FROM general_course_modules WHERE course_id = '{cid}'::uuid;",
+            f"UPDATE general_courses SET visibility_status='PUBLISHED' WHERE course_id = '{cid}'::uuid; -- expected FAIL",
+            f"INSERT INTO general_course_modules (module_id, course_id, title, order_index)",
+            f"VALUES ('{mid}'::uuid, '{cid}'::uuid, 'Module 1: Mo dau', 1);",
+            f"UPDATE general_courses SET visibility_status='PUBLISHED' WHERE course_id = '{cid}'::uuid; -- expected PASS",
+        ],
+        fn=step_execute,
+    )
+    execute_step(
+        run,
+        step_index=3,
+        step_key="check_trigger_side_effects",
+        step_name="Trigger check: trg_before_publish_course",
+        sql_label="Verify blocked attempt + successful publish",
+        sql_lines=[
+            "-- Trigger ngam fn_validate_course_publish:",
+            "-- 1) Chan publish khi module_count = 0",
+            "-- 2) Cho phep publish khi da co module",
+            f"SELECT course_id, title, visibility_status, updated_at FROM general_courses WHERE course_id = '{cid}'::uuid;",
+            f"SELECT COUNT(*) AS module_count FROM general_course_modules WHERE course_id = '{cid}'::uuid;",
+        ],
+        fn=step_trigger_check,
+    )
+    execute_step(
+        run,
+        step_index=4,
+        step_key="refresh_source_tables",
+        step_name="Refresh source tables",
+        sql_label="SELECT snapshot source tables",
+        fn=step_refresh_tables,
+    )
+    execute_step(
+        run,
+        step_index=5,
+        step_key="refresh_reporting_views",
+        step_name="Refresh reporting views",
+        sql_label="Reload 3 reporting views",
+        fn=step_refresh_views,
+    )
+    execute_step(
+        run,
+        step_index=6,
+        step_key="complete",
+        step_name="Complete",
+        sql_label="Finalize run result",
+        fn=step_complete,
+    )
+
+
+def run_transfer_to_admin_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[str, Any]) -> None:
+    payload = run.payload
+
+    def step_validate() -> Dict[str, Any]:
+        ensure_transfer_entities(conn)
+
+        raw_from_user_id = payload.get("from_user_id")
+        amount_raw = payload.get("amount")
+
+        with conn.cursor() as cur:
+            if raw_from_user_id is None:
+                cur.execute(
+                    """
+                    SELECT w.user_id
+                    FROM wallets AS w
+                    JOIN users AS u
+                         ON u.user_id = w.user_id
+                    JOIN roles AS r
+                         ON r.role_id = u.role_id
+                    WHERE r.role_name <> 'ADMIN'
+                      AND u.is_deleted = FALSE
+                      AND u.status = 'active'
+                    ORDER BY u.created_at ASC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError("Khong tim thay vi nguon hop le de chuyen tien.")
+                from_user_id = row["user_id"]
+            else:
+                from_user_id = validate_uuid(raw_from_user_id, "from_user_id")
+
+        if amount_raw in (None, ""):
+            amount = Decimal("50.00")
+        else:
+            try:
+                amount = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+            except Exception as exc:
+                raise ValueError("amount phai la so hop le.") from exc
+
+        if amount <= 0:
+            raise ValueError("amount phai lon hon 0.")
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       r.role_name,
+                       u.status,
+                       w.balance,
+                       w.updated_at
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                WHERE w.user_id = %s::uuid
+                """,
+                (from_user_id,),
+            )
+            from_wallet_before = cur.fetchone()
+            if not from_wallet_before:
+                raise ValueError("from_user_id chua co wallet.")
+
+            cur.execute(
+                """
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       u.status,
+                       w.balance,
+                       w.updated_at
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                WHERE r.role_name = 'ADMIN'
+                  AND u.is_deleted = FALSE
+                ORDER BY u.created_at ASC
+                LIMIT 1
+                """,
+            )
+            admin_wallet_before = cur.fetchone()
+            if not admin_wallet_before:
+                raise ValueError("Khong tim thay wallet ADMIN de nhan tien.")
+
+        conn.commit()
+        context["validated"] = {
+            "from_user_id": from_user_id,
+            "amount": amount,
+            "to_admin_user_id": admin_wallet_before["user_id"],
+        }
+        context["metrics_before"] = {
+            "from_wallet_before": from_wallet_before,
+            "admin_wallet_before": admin_wallet_before,
+        }
+        return {
+            "from_wallet_before": from_wallet_before,
+            "admin_wallet_before": admin_wallet_before,
+            "amount": amount,
+        }
+
+    def step_execute() -> Dict[str, Any]:
+        data = context["validated"]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM fn_transfer_to_admin_wallet(%s::uuid, %s::numeric)
+                """,
+                (data["from_user_id"], data["amount"]),
+            )
+            transfer_result = cur.fetchone()
+            if not transfer_result:
+                raise ValueError("Khong nhan duoc ket qua tu fn_transfer_to_admin_wallet.")
+
+            tx_id = transfer_result["tx_id"]
+
+            cur.execute(
+                """
+                SELECT transaction_id,
+                       from_wallet_user_id,
+                       to_wallet_user_id,
+                       amount,
+                       status,
+                       message,
+                       created_at
+                FROM transaction_logs
+                WHERE transaction_id = %s::uuid
+                """,
+                (tx_id,),
+            )
+            transaction_log = cur.fetchone()
+
+        conn.commit()
+        context["action_data"] = {
+            "transfer_result": transfer_result,
+            "transaction_log": transaction_log,
+        }
+        return {
+            "transfer_result": transfer_result,
+            "transaction_log": transaction_log,
+        }
+
+    def step_trigger_check() -> Dict[str, Any]:
+        data = context["validated"]
+        result_row = context["action_data"]["transfer_result"]
+        tx_id = result_row["tx_id"]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       r.role_name,
+                       u.status,
+                       w.balance,
+                       w.updated_at
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                WHERE w.user_id = %s::uuid
+                """,
+                (data["from_user_id"],),
+            )
+            from_wallet_after = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT w.user_id,
+                       u.username,
+                       COALESCE(up.full_name, u.username) AS full_name,
+                       u.status,
+                       w.balance,
+                       w.updated_at
+                FROM wallets AS w
+                JOIN users AS u
+                     ON u.user_id = w.user_id
+                JOIN roles AS r
+                     ON r.role_id = u.role_id
+                LEFT JOIN user_profiles AS up
+                       ON up.user_id = u.user_id
+                WHERE w.user_id = %s::uuid
+                """,
+                (data["to_admin_user_id"],),
+            )
+            admin_wallet_after = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT action_type, message, created_at
+                FROM transaction_action_logs
+                WHERE transaction_id = %s::uuid
+                ORDER BY created_at ASC
+                """,
+                (tx_id,),
+            )
+            action_logs = cur.fetchall()
+
+        conn.commit()
+        before_from = context["metrics_before"]["from_wallet_before"]
+        before_admin = context["metrics_before"]["admin_wallet_before"]
+        before_from_balance = Decimal(str(before_from["balance"]))
+        before_admin_balance = Decimal(str(before_admin["balance"]))
+        after_from_balance = Decimal(str(from_wallet_after["balance"])) if from_wallet_after else before_from_balance
+        after_admin_balance = Decimal(str(admin_wallet_after["balance"])) if admin_wallet_after else before_admin_balance
+        amount = Decimal(str(data["amount"]))
+        success = str(result_row.get("tx_status", "")).upper() == "SUCCESS"
+
+        context["action_data"].update(
+            {
+                "from_wallet_before": before_from,
+                "from_wallet_after": from_wallet_after,
+                "admin_wallet_before": before_admin,
+                "admin_wallet_after": admin_wallet_after,
+                "tx_action_logs": action_logs,
+            }
+        )
+        return {
+            "transfer_status": result_row.get("tx_status"),
+            "transfer_message": result_row.get("tx_message"),
+            "expected_source_decrease": amount if success else Decimal("0.00"),
+            "actual_source_decrease": before_from_balance - after_from_balance,
+            "expected_admin_increase": amount if success else Decimal("0.00"),
+            "actual_admin_increase": after_admin_balance - before_admin_balance,
+            "action_log_count": len(action_logs),
+        }
+
+    def step_refresh_tables() -> Dict[str, Any]:
+        tables_after = fetch_source_tables(conn)
+        context["tables_after"] = tables_after
+        return {name: len(rows) for name, rows in tables_after.items()}
+
+    def step_refresh_views() -> Dict[str, Any]:
+        views_after = fetch_reporting_views(conn)
+        context["views_after"] = views_after
+        return {name: len(rows) for name, rows in views_after.items()}
+
+    def step_complete() -> Dict[str, Any]:
+        transfer_result = context.get("action_data", {}).get("transfer_result") or {}
+        tx_status = str(transfer_result.get("tx_status", "ERROR")).upper()
+        if tx_status == "SUCCESS":
+            context["message"] = "Transfer wallet thanh cong. So du nguon giam va vi ADMIN tang dung so tien."
+        else:
+            context["message"] = f"Transfer wallet khong thanh cong: {transfer_result.get('tx_message')}"
+        return {"status": "done"}
+
+    v = context.get("validated") or {}
+    source_uid = v.get("from_user_id", "?")
+    admin_uid = v.get("to_admin_user_id", "?")
+    amount = v.get("amount", Decimal("50.00"))
+
+    execute_step(
+        run,
+        step_index=1,
+        step_key="validate_input",
+        step_name="Validate transfer input",
+        sql_label="Validate source wallet + admin wallet + amount",
+        sql_lines=[
+            "-- TRANSFER TXN: hoc vien/giao vien nop tien ve vi ADMIN",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';",
+            "CREATE TABLE IF NOT EXISTS wallets (...);",
+            "CREATE TABLE IF NOT EXISTS transaction_logs (...);",
+            "CREATE TABLE IF NOT EXISTS transaction_action_logs (...);",
+            f"-- from_user_id = '{source_uid}', amount = {amount}",
+        ],
+        fn=step_validate,
+    )
+    source_uid = context["validated"]["from_user_id"]
+    admin_uid = context["validated"]["to_admin_user_id"]
+    amount = context["validated"]["amount"]
+    execute_step(
+        run,
+        step_index=2,
+        step_key="execute_procedure",
+        step_name="Execute transfer function",
+        sql_label="SELECT * FROM fn_transfer_to_admin_wallet(...)",
+        sql_lines=[
+            "BEGIN;",
+            f"SELECT * FROM fn_transfer_to_admin_wallet('{source_uid}'::uuid, {amount});",
+            "-- Trong function:",
+            "-- 1) SELECT wallet nguon FOR UPDATE",
+            "-- 2) Kiem tra status='active' + du so du",
+            "-- 3) SELECT wallet ADMIN FOR UPDATE",
+            "-- 4) UPDATE tru tien nguon + cong tien admin",
+            "-- 5) INSERT transaction_logs + transaction_action_logs",
+            "COMMIT;",
+        ],
+        fn=step_execute,
+    )
+    execute_step(
+        run,
+        step_index=3,
+        step_key="check_trigger_side_effects",
+        step_name="Verify transfer side-effects",
+        sql_label="Read wallets + transaction logs after transfer",
+        sql_lines=[
+            f"SELECT user_id, balance, updated_at FROM wallets WHERE user_id IN ('{source_uid}'::uuid, '{admin_uid}'::uuid);",
+            "SELECT transaction_id, from_wallet_user_id, to_wallet_user_id, amount, status",
+            "  FROM transaction_logs ORDER BY created_at DESC LIMIT 5;",
+            "SELECT action_type, message, created_at",
+            "  FROM transaction_action_logs ORDER BY created_at DESC LIMIT 10;",
+        ],
+        fn=step_trigger_check,
+    )
+    execute_step(
+        run,
+        step_index=4,
+        step_key="refresh_source_tables",
+        step_name="Refresh source tables",
+        sql_label="Reload wallets + transaction logs + source tables",
+        fn=step_refresh_tables,
+    )
+    execute_step(
+        run,
+        step_index=5,
+        step_key="refresh_reporting_views",
+        step_name="Refresh reporting views",
+        sql_label="Reload 3 reporting views",
+        fn=step_refresh_views,
+    )
+    execute_step(
+        run,
+        step_index=6,
+        step_key="complete",
+        step_name="Complete",
+        sql_label="Finalize transfer result",
         fn=step_complete,
     )
 
@@ -2170,12 +4090,22 @@ def run_worker(run: RunState) -> None:
 
     try:
         with get_db_connection() as conn:
+            if run.action in {"transfer_to_admin", "reset"}:
+                ensure_transfer_entities(conn)
             ensure_reset_baseline(conn)
             tables_before = fetch_source_tables(conn)
             views_before = fetch_reporting_views(conn)
             context: Dict[str, Any] = {}
             if run.action == "view_reports":
                 run_view_reports_pipeline(run, conn, context)
+            elif run.action == "trigger_updated_at":
+                run_trigger_updated_at_pipeline(run, conn, context)
+            elif run.action == "trigger_init_streak":
+                run_trigger_init_streak_pipeline(run, conn, context)
+            elif run.action == "trigger_publish_guard":
+                run_trigger_publish_guard_pipeline(run, conn, context)
+            elif run.action == "transfer_to_admin":
+                run_transfer_to_admin_pipeline(run, conn, context)
             elif run.action == "search_students":
                 run_search_students_pipeline(run, conn, context)
             elif run.action == "search_courses":
@@ -2219,6 +4149,10 @@ def run_worker(run: RunState) -> None:
     except Exception as exc:
         error_message = str(exc)
         rollback_actions = {
+            "trigger_updated_at",
+            "trigger_init_streak",
+            "trigger_publish_guard",
+            "transfer_to_admin",
             "enroll",
             "update_progress",
             "progress_comment",
@@ -2317,6 +4251,8 @@ def index() -> Response:
 # Trả dữ liệu khởi tạo cho frontend.
 def api_init():
     with get_db_connection() as conn:
+        if not column_exists(conn, "users", "status") or not table_exists(conn, "wallets"):
+            ensure_transfer_entities(conn)
         ensure_reset_baseline(conn)
         response = {
             "ok": True,

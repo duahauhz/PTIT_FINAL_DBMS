@@ -128,6 +128,7 @@ def choose_payloads(init_data: Dict[str, Any]) -> Dict[str, Any]:
     courses = init_data["lookups"]["courses"]
     lessons = init_data["lookups"]["lessons"]
     users = init_data["lookups"]["users"]
+    wallet_senders = init_data["lookups"].get("wallet_senders", [])
     enrollments = init_data["tables"]["course_enrollments"]
 
     existing_pairs = {(row["student_id"], row["course_id"]) for row in enrollments}
@@ -172,8 +173,29 @@ def choose_payloads(init_data: Dict[str, Any]) -> Dict[str, Any]:
     if not student_user:
         student_user = users[0]
 
+    timestamp_user = None
+    for user in users:
+        if user.get("role_name") in {"ADMIN", "TEACHER"} and not user.get("is_deleted"):
+            timestamp_user = user
+            break
+    if not timestamp_user:
+        timestamp_user = users[0]
+
+    transfer_sender = None
+    if wallet_senders:
+        for row in wallet_senders:
+            if str(row.get("status", "")).lower() == "active":
+                transfer_sender = row
+                break
+        if not transfer_sender:
+            transfer_sender = wallet_senders[0]
+
     return {
         "search_keyword": students[0]["username"][:3],
+        "trigger_updated_at": {
+            "user_id": timestamp_user["user_id"],
+            "new_username": f"trigger_ts_{int(time.time())}",
+        },
         "enroll": {
             "student_id": enroll_pair[0],
             "course_id": enroll_pair[1],
@@ -197,6 +219,10 @@ def choose_payloads(init_data: Dict[str, Any]) -> Dict[str, Any]:
         "soft_delete_course": {
             "course_id": courses[0]["course_id"],
             "course_title": courses[0]["title"],
+        },
+        "transfer_to_admin": {
+            "from_user_id": transfer_sender["user_id"] if transfer_sender else None,
+            "amount": 25.00,
         },
     }
 
@@ -287,11 +313,15 @@ def main() -> int:
         appjs_text = (DEMO_DIR / "static" / "app.js").read_text(encoding="utf-8")
         scenarios = [
             "view_reports",
+            "trigger_updated_at",
+            "trigger_init_streak",
+            "trigger_publish_guard",
             "search_students",
             "search_courses",
             "enroll",
             "update_progress",
             "progress_comment",
+            "transfer_to_admin",
             "soft_delete_user",
             "soft_delete_course",
         ]
@@ -317,11 +347,11 @@ def main() -> int:
         if "run_started" not in appjs_text:
             missing.append("sse-run_started-handler")
         if missing:
-            rows.append(("ui_static_8_scenarios", False, ", ".join(missing)))
-            print(f"[FAIL] ui_static_8_scenarios: missing {', '.join(missing)}", flush=True)
+            rows.append(("ui_static_scenarios", False, ", ".join(missing)))
+            print(f"[FAIL] ui_static_scenarios: missing {', '.join(missing)}", flush=True)
         else:
-            rows.append(("ui_static_8_scenarios", True, "all hooks present"))
-            print("[PASS] ui_static_8_scenarios: all hooks present", flush=True)
+            rows.append(("ui_static_scenarios", True, "all hooks present"))
+            print("[PASS] ui_static_scenarios: all hooks present", flush=True)
 
         run_case("reset_baseline", "reset", {}, True, rows)
 
@@ -337,6 +367,10 @@ def main() -> int:
             "comments": len(init_data.get("tables", {}).get("comments", [])),
             "notification_users": len(init_data.get("tables", {}).get("notification_users", [])),
             "student_streaks": len(init_data.get("tables", {}).get("student_streaks", [])),
+        }
+        baseline_wallet_balances = {
+            row.get("user_id"): str(row.get("balance"))
+            for row in init_data.get("tables", {}).get("wallets", [])
         }
         expected_view_keys = {
             "vw_student_progress_report",
@@ -375,6 +409,40 @@ def main() -> int:
             return ok, detail
 
         run_case("view_reports_readonly", "view_reports", {}, True, rows, view_reports_check)
+
+        def trigger_updated_at_check(_events, result):
+            step = trace_step(result, "check_trigger_side_effects")
+            details = {} if not step else step.get("details", {})
+            changed = details.get("updated_at_changed")
+            after = (result.get("action_data", {}) or {}).get("user_after_update_timestamp") or {}
+            ok = bool(changed) and bool(after.get("updated_at"))
+            return ok, f"updated_at_changed={changed} user={after.get('user_id')}"
+
+        run_case(
+            "trigger_updated_at_demo",
+            "trigger_updated_at",
+            payloads["trigger_updated_at"],
+            True,
+            rows,
+            trigger_updated_at_check,
+        )
+
+        def trigger_init_streak_check(_events, result):
+            after = (result.get("action_data", {}) or {}).get("streak_after_insert_student") or {}
+            created = bool(after) and str(after.get("current_streak")) == "0"
+            return created, f"streak_row_present={bool(after)} current_streak={after.get('current_streak')}"
+
+        run_case("trigger_init_streak_demo", "trigger_init_streak", {}, True, rows, trigger_init_streak_check)
+
+        def trigger_publish_guard_check(_events, result):
+            ad = result.get("action_data", {}) or {}
+            blocked = bool(ad.get("blocked_publish_error"))
+            course_after = ad.get("course_after_publish") or {}
+            published = course_after.get("visibility_status") == "PUBLISHED"
+            return blocked and published, f"blocked={blocked} published={published}"
+
+        run_case("trigger_publish_guard_demo", "trigger_publish_guard", {}, True, rows, trigger_publish_guard_check)
+
         run_case("search_students_readonly", "search_students", {"keyword": payloads["search_keyword"]}, True, rows, readonly_check)
         run_case("search_courses_readonly", "search_courses", {"keyword": "", "category_id": "", "status": ""}, True, rows, readonly_check)
 
@@ -427,6 +495,62 @@ def main() -> int:
 
         run_case("progress_comment_transaction", "progress_comment", payloads["progress_comment"], True, rows, progress_comment_check)
         run_case("reset_after_progress_comment", "reset", {}, True, rows, reset_count_check)
+
+        def transfer_to_admin_check(_events, result):
+            ad = result.get("action_data", {}) or {}
+            transfer = ad.get("transfer_result") or {}
+            tx_log = ad.get("transaction_log") or {}
+            from_before = ad.get("from_wallet_before") or {}
+            from_after = ad.get("from_wallet_after") or {}
+            admin_before = ad.get("admin_wallet_before") or {}
+            admin_after = ad.get("admin_wallet_after") or {}
+
+            try:
+                amount = float(payloads["transfer_to_admin"]["amount"])
+                src_before = float(from_before.get("balance"))
+                src_after = float(from_after.get("balance"))
+                dst_before = float(admin_before.get("balance"))
+                dst_after = float(admin_after.get("balance"))
+                source_delta_ok = abs((src_before - src_after) - amount) < 0.001
+                admin_delta_ok = abs((dst_after - dst_before) - amount) < 0.001
+            except Exception:
+                source_delta_ok = False
+                admin_delta_ok = False
+
+            status_ok = transfer.get("tx_status") == "SUCCESS" and tx_log.get("status") == "SUCCESS"
+            ok = status_ok and source_delta_ok and admin_delta_ok
+            return ok, (
+                f"tx_status={transfer.get('tx_status')} tx_log_status={tx_log.get('status')} "
+                f"source_delta_ok={source_delta_ok} admin_delta_ok={admin_delta_ok}"
+            )
+
+        run_case(
+            "transfer_to_admin_transaction",
+            "transfer_to_admin",
+            payloads["transfer_to_admin"],
+            True,
+            rows,
+            transfer_to_admin_check,
+        )
+
+        def reset_with_wallet_check(_events, result):
+            ok_counts, detail_counts = reset_count_check(_events, result)
+            wallet_rows = result.get("tables_after", {}).get("wallets", [])
+            after_wallet_balances = {
+                row.get("user_id"): str(row.get("balance"))
+                for row in wallet_rows
+            }
+            wallet_ok = True
+            for uid, bal in baseline_wallet_balances.items():
+                if uid not in after_wallet_balances:
+                    wallet_ok = False
+                    break
+                if after_wallet_balances[uid] != bal:
+                    wallet_ok = False
+                    break
+            return wallet_ok and ok_counts, f"{detail_counts}; wallet_restored={wallet_ok}"
+
+        run_case("reset_after_transfer", "reset", {}, True, rows, reset_with_wallet_check)
 
         def soft_delete_user_check(_events, result):
             after = result.get("action_data", {}).get("user_after_soft_delete") or {}

@@ -15,8 +15,12 @@ const SCENARIO_RELEVANT_TABLES = {
   enroll: ['course_enrollments', 'student_streaks'],
   update_progress: ['course_enrollments', 'notification_users'],
   progress_comment: ['course_enrollments', 'comments', 'notification_users'],
+  transfer_to_admin: ['wallets', 'transaction_logs', 'transaction_action_logs'],
   soft_delete_user: ['users'],
   soft_delete_course: ['general_courses'],
+  trigger_updated_at: ['users'],
+  trigger_init_streak: ['users', 'students', 'student_streaks'],
+  trigger_publish_guard: ['general_courses', 'general_course_modules'],
   view_reports: [],
   search_students: [],
   search_courses: [],
@@ -31,6 +35,11 @@ const ROW_KEY_FIELDS = {
   comments: ['comment_id'],
   users: ['user_id'],
   general_courses: ['course_id'],
+  students: ['user_id'],
+  general_course_modules: ['module_id'],
+  wallets: ['user_id'],
+  transaction_logs: ['transaction_id'],
+  transaction_action_logs: ['action_log_id'],
   vw_student_progress_report: ['email', 'course_title', 'enrolled_at'],
   vw_course_analytics: ['course_id'],
   vw_top_learners_leaderboard: ['full_name', 'avatar_url'],
@@ -55,6 +64,8 @@ const el = {
   scKeyword: $('sc-keyword'),
   scCategory: $('sc-category'),
   scStatus: $('sc-status'),
+  tuUser: $('tu-user'),
+  tuUsername: $('tu-username'),
   enrollStudent: $('enroll-student'),
   enrollCourse: $('enroll-course'),
   upStudent: $('up-student'),
@@ -65,6 +76,9 @@ const el = {
   pcLesson: $('pc-lesson'),
   pcProgress: $('pc-progress'),
   pcComment: $('pc-comment'),
+  txFromUser: $('tx-from-user'),
+  txAdminUser: $('tx-admin-user'),
+  txAmount: $('tx-amount'),
   sduUser: $('sdu-user'),
   sdcCourse: $('sdc-course'),
 };
@@ -497,6 +511,15 @@ function collectPayload(action) {
         category_id: el.scCategory.value,
         status: el.scStatus.value,
       };
+    case 'trigger_updated_at':
+      return {
+        user_id: el.tuUser.value,
+        new_username: el.tuUsername.value.trim(),
+      };
+    case 'trigger_init_streak':
+      return {};
+    case 'trigger_publish_guard':
+      return {};
     case 'enroll':
       return { student_id: el.enrollStudent.value, course_id: el.enrollCourse.value };
     case 'update_progress':
@@ -508,6 +531,11 @@ function collectPayload(action) {
         lesson_id: el.pcLesson.value,
         progress: el.pcProgress.value,
         comment_text: el.pcComment.value,
+      };
+    case 'transfer_to_admin':
+      return {
+        from_user_id: el.txFromUser.value || null,
+        amount: el.txAmount.value,
       };
     case 'soft_delete_user':
       return { user_id: el.sduUser.value };
@@ -637,6 +665,45 @@ async function loadResult(runId, relevantTables) {
         termWrite(`  ${viewName}: ${(rows || []).length} rows`, 'sql-comment');
       });
     }
+
+    if (ad.user_after_update_timestamp) {
+      termWrite('', 'info');
+      termWrite('── SESSION 1 result: Trigger updated_at ──', 'sql-string');
+      termRenderInlineTable([ad.user_after_update_timestamp]);
+    }
+
+    if (ad.streak_after_insert_student) {
+      termWrite('', 'info');
+      termWrite('── SESSION 2 result: Trigger init streak ──', 'sql-string');
+      termRenderInlineTable([ad.streak_after_insert_student]);
+    }
+
+    if (ad.course_after_publish) {
+      termWrite('', 'info');
+      termWrite('── SESSION 3 result: Trigger publish guard ──', 'sql-string');
+      termRenderInlineTable([ad.course_after_publish]);
+      if (ad.blocked_publish_error) {
+        termWrite(`  blocked_error: ${String(ad.blocked_publish_error).slice(0, 220)}`, 'sql-comment');
+      }
+    }
+
+    if (ad.transfer_result) {
+      termWrite('', 'info');
+      termWrite('── Transfer wallet result ──', 'sql-string');
+      termRenderInlineTable([ad.transfer_result]);
+      if (ad.transaction_log) {
+        termWrite('  transaction_log:', 'sql-comment');
+        termRenderInlineTable([ad.transaction_log]);
+      }
+      if (ad.from_wallet_after && ad.admin_wallet_after) {
+        termWrite('  wallets after transfer:', 'sql-comment');
+        termRenderInlineTable([ad.from_wallet_after, ad.admin_wallet_after]);
+      }
+      if (Array.isArray(ad.tx_action_logs) && ad.tx_action_logs.length > 0) {
+        termWrite(`  action_logs: ${ad.tx_action_logs.length} dong`, 'sql-comment');
+        termRenderInlineTable(ad.tx_action_logs.slice(0, 10));
+      }
+    }
   } catch (err) {
     termWrite(`Loi tai ket qua: ${err.message}`, 'sql-error');
   }
@@ -721,6 +788,7 @@ async function init() {
     setDbStatus(true);
 
     const lk = data.lookups || {};
+    buildSelect(el.tuUser, lk.users || [], r => r.user_id, r => `${r.full_name} [${r.role_name}]${r.is_deleted ? ' xoa_mem' : ''}`);
     buildSelect(el.enrollStudent, lk.students || [], r => r.user_id, r => `${r.full_name} (${r.username})`);
     buildSelect(el.upStudent, lk.students || [], r => r.user_id, r => `${r.full_name} (${r.username})`);
     buildSelect(el.pcStudent, lk.students || [], r => r.user_id, r => `${r.full_name} (${r.username})`);
@@ -731,6 +799,19 @@ async function init() {
     buildSelect(el.pcLesson, lk.lessons || [], r => r.lesson_id, r => `${r.course_title} -> ${r.lesson_title}`);
     buildSelect(el.sduUser, lk.users || [], r => r.user_id, r => `${r.full_name} [${r.role_name}]${r.is_deleted ? ' xoa_mem' : ''}`);
     buildSelect(el.scCategory, lk.course_categories || [], r => r.category_id, r => r.name, true);
+    buildSelect(
+      el.txFromUser,
+      lk.wallet_senders || [],
+      r => r.user_id,
+      r => `${r.full_name} [${r.role_name}] - ${r.status} - balance=${r.balance}`
+    );
+    buildSelect(
+      el.txAdminUser,
+      lk.admin_wallets || [],
+      r => r.user_id,
+      r => `${r.full_name} [ADMIN] - ${r.status} - balance=${r.balance}`
+    );
+    if (el.txAdminUser) el.txAdminUser.disabled = true;
 
     renderSnapshotDataset(el.tablesDelta, data.tables || {}, null);
     renderSnapshotDataset(el.viewsDelta, data.views || {}, null);

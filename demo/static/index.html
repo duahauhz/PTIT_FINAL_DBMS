@@ -49,6 +49,33 @@
         <span class="nav-tag tag-view">VIEW</span>
       </button>
 
+      <button class="nav-item" data-scenario="trigger_updated_at">
+        <span class="nav-icon icon-proc">T</span>
+        <div class="nav-text">
+          <span class="nav-name">Trigger UpdatedAt</span>
+          <span class="nav-hint">SESSION 1</span>
+        </div>
+        <span class="nav-tag tag-proc">TRG</span>
+      </button>
+
+      <button class="nav-item" data-scenario="trigger_init_streak">
+        <span class="nav-icon icon-proc">T</span>
+        <div class="nav-text">
+          <span class="nav-name">Trigger Init Streak</span>
+          <span class="nav-hint">SESSION 2</span>
+        </div>
+        <span class="nav-tag tag-proc">TRG</span>
+      </button>
+
+      <button class="nav-item" data-scenario="trigger_publish_guard">
+        <span class="nav-icon icon-proc">T</span>
+        <div class="nav-text">
+          <span class="nav-name">Trigger Publish Guard</span>
+          <span class="nav-hint">SESSION 3</span>
+        </div>
+        <span class="nav-tag tag-proc">TRG</span>
+      </button>
+
       <button class="nav-item" data-scenario="search_students">
         <span class="nav-icon icon-fn">ƒ</span>
         <div class="nav-text">
@@ -90,6 +117,15 @@
         <div class="nav-text">
           <span class="nav-name">Transaction E2E</span>
           <span class="nav-hint">BEGIN → CALL → INSERT → COMMIT</span>
+        </div>
+        <span class="nav-tag tag-txn">TXN</span>
+      </button>
+
+      <button class="nav-item" data-scenario="transfer_to_admin">
+        <span class="nav-icon icon-txn">₫</span>
+        <div class="nav-text">
+          <span class="nav-name">Transfer To Admin</span>
+          <span class="nav-hint">Wallet TXN + Logs</span>
         </div>
         <span class="nav-tag tag-txn">TXN</span>
       </button>
@@ -137,6 +173,63 @@
         <p class="panel-desc">Truy vấn 3 view đã tạo sẵn trong DB: <code>vw_student_progress_report</code>, <code>vw_course_analytics</code>, <code>vw_top_learners_leaderboard</code>.</p>
         <div class="panel-actions">
           <button class="btn-run" data-action="view_reports" data-scenario="view_reports">▶ Chạy kịch bản</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel: Trigger UpdatedAt -->
+    <div class="scenario-panel" id="panel-trigger_updated_at">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-badge badge-proc">TRIGGER SESSION 1</span>
+          <h2>Automation UpdatedAt</h2>
+        </div>
+        <p class="panel-desc">Demo riêng trigger <code class="trigger-name">trg_auto_update_users_timestamp</code>: cập nhật <code>users.username</code> và quan sát <code>updated_at</code> tự đổi ngầm.</p>
+        <div class="trigger-badge-row">
+          <span class="trigger-badge">🔔 TRIGGER: trg_auto_update_users_timestamp → users.updated_at</span>
+        </div>
+        <div class="panel-inputs">
+          <label class="input-label">Chọn user</label>
+          <select class="styled-input" id="tu-user"></select>
+          <label class="input-label">Username mới</label>
+          <input class="styled-input" id="tu-username" type="text" value="student_minh_pro" placeholder="Nhap username moi">
+        </div>
+        <div class="panel-actions">
+          <button class="btn-run" data-action="trigger_updated_at" data-scenario="trigger_updated_at">▶ Chạy SESSION 1</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel: Trigger Init Streak -->
+    <div class="scenario-panel" id="panel-trigger_init_streak">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-badge badge-proc">TRIGGER SESSION 2</span>
+          <h2>Init Student Streak</h2>
+        </div>
+        <p class="panel-desc">Demo riêng trigger <code class="trigger-name">trg_after_insert_student</code>: chèn học viên mới và quan sát bản ghi <code>student_streaks</code> được tạo tự động.</p>
+        <div class="trigger-badge-row">
+          <span class="trigger-badge">🔔 TRIGGER: trg_after_insert_student → student_streaks</span>
+        </div>
+        <div class="panel-actions">
+          <button class="btn-run" data-action="trigger_init_streak" data-scenario="trigger_init_streak">▶ Chạy SESSION 2</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel: Trigger Publish Guard -->
+    <div class="scenario-panel" id="panel-trigger_publish_guard">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-badge badge-proc">TRIGGER SESSION 3</span>
+          <h2>Publish Guard</h2>
+        </div>
+        <p class="panel-desc">Demo riêng trigger <code class="trigger-name">trg_before_publish_course</code>: thử publish khóa học rỗng (bị chặn), sau đó thêm module và publish lại thành công.</p>
+        <div class="trigger-badge-row">
+          <span class="trigger-badge">🔔 TRIGGER: trg_before_publish_course → chặn PUBLISHED khi chưa có module</span>
+        </div>
+        <div class="panel-actions">
+          <button class="btn-run" data-action="trigger_publish_guard" data-scenario="trigger_publish_guard">▶ Chạy SESSION 3</button>
         </div>
       </div>
     </div>
@@ -259,6 +352,31 @@
         </div>
         <div class="panel-actions">
           <button class="btn-run" data-action="progress_comment" data-scenario="progress_comment">▶ Chạy Transaction</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel: Transfer Wallet To Admin -->
+    <div class="scenario-panel" id="panel-transfer_to_admin">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-badge badge-txn">TRANSACTION</span>
+          <h2>Wallet Transfer To Admin</h2>
+        </div>
+        <p class="panel-desc">Demo chuyển tiền trực quan: <strong>BEGIN</strong> → khóa ví nguồn/đích (<code>FOR UPDATE</code>) → kiểm tra <code>status=active</code> + số dư → cập nhật số dư → ghi <code>transaction_logs</code> + <code>transaction_action_logs</code> → <strong>COMMIT/ROLLBACK logic</strong>.</p>
+        <div class="trigger-badge-row">
+          <span class="trigger-badge txn-flow">BEGIN → CHECK SOURCE → CHECK ADMIN → UPDATE wallets → INSERT logs → COMMIT/ROLLBACK</span>
+        </div>
+        <div class="panel-inputs">
+          <label class="input-label">Ví nguồn (không phải ADMIN)</label>
+          <select class="styled-input" id="tx-from-user"></select>
+          <label class="input-label">Ví nhận (ADMIN)</label>
+          <select class="styled-input" id="tx-admin-user"></select>
+          <label class="input-label">Số tiền chuyển</label>
+          <input class="styled-input" id="tx-amount" type="number" min="0.01" step="0.01" value="50.00">
+        </div>
+        <div class="panel-actions">
+          <button class="btn-run" data-action="transfer_to_admin" data-scenario="transfer_to_admin">▶ Chạy Transaction</button>
         </div>
       </div>
     </div>
