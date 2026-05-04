@@ -267,6 +267,102 @@ def fetch_lookup_data(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]
     }
 
 
+def fetch_demo_suggestions(conn: psycopg.Connection, lookups: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Lay goi y demo tu DB de UI khong phai fix cung keyword hay ban ghi."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT value
+            FROM (
+                SELECT u.username AS value
+                FROM users AS u
+                JOIN students AS s ON s.user_id = u.user_id
+                WHERE u.is_deleted = FALSE
+                UNION ALL
+                SELECT up.full_name AS value
+                FROM user_profiles AS up
+                JOIN students AS s ON s.user_id = up.user_id
+                JOIN users AS u ON u.user_id = s.user_id
+                WHERE u.is_deleted = FALSE
+                UNION ALL
+                SELECT s.school_name AS value
+                FROM students AS s
+                JOIN users AS u ON u.user_id = s.user_id
+                WHERE u.is_deleted = FALSE
+            ) AS suggested
+            WHERE value IS NOT NULL AND btrim(value) <> ''
+            ORDER BY value ASC
+            LIMIT 8
+            """
+        )
+        student_keywords = [row["value"] for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT DISTINCT title AS value
+            FROM general_courses
+            WHERE is_deleted = FALSE
+              AND title IS NOT NULL
+              AND btrim(title) <> ''
+            ORDER BY title ASC
+            LIMIT 8
+            """
+        )
+        course_keywords = [row["value"] for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT DISTINCT visibility_status AS value
+            FROM general_courses
+            WHERE visibility_status IS NOT NULL
+              AND btrim(visibility_status) <> ''
+            ORDER BY visibility_status ASC
+            """
+        )
+        course_statuses = [row["value"] for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT ce.student_id,
+                   su.username AS student_username,
+                   ce.course_id,
+                   gc.title AS course_title,
+                   ce.progress
+            FROM course_enrollments AS ce
+            JOIN users AS su
+                 ON su.user_id = ce.student_id
+            JOIN general_courses AS gc
+                 ON gc.course_id = ce.course_id
+            WHERE su.is_deleted = FALSE
+              AND gc.is_deleted = FALSE
+            ORDER BY ce.enrolled_at DESC
+            LIMIT 8
+            """
+        )
+        enrollment_pairs = cur.fetchall()
+
+    students = lookups.get("students", [])
+    courses = lookups.get("courses", [])
+    users = [u for u in lookups.get("users", []) if not u.get("is_deleted")]
+    non_admin_users = [u for u in users if u.get("role_name") != "ADMIN"]
+    wallet_senders = lookups.get("wallet_senders", [])
+    admin_wallets = lookups.get("admin_wallets", [])
+
+    return {
+        "student_keywords": student_keywords,
+        "course_keywords": course_keywords,
+        "course_statuses": course_statuses,
+        "default_student": students[0] if students else None,
+        "default_course": courses[0] if courses else None,
+        "default_user": non_admin_users[0] if non_admin_users else (users[0] if users else None),
+        "default_soft_delete_user": users[-1] if users else None,
+        "default_soft_delete_course": courses[-1] if courses else None,
+        "default_wallet_sender": wallet_senders[0] if wallet_senders else None,
+        "default_admin_wallet": admin_wallets[0] if admin_wallets else None,
+        "enrollment_pairs": enrollment_pairs,
+    }
+
+
 # Tải snapshot các bảng nguồn để so sánh trước/sau.
 def fetch_source_tables(conn: psycopg.Connection) -> Dict[str, List[Dict[str, Any]]]:
     has_user_status = column_exists(conn, "users", "status")
@@ -555,6 +651,109 @@ def run_query_value(conn: psycopg.Connection, sql: str, params: tuple[Any, ...])
     return None if row is None else next(iter(row.values()))
 
 
+def default_student_course_pair(conn: psycopg.Connection, prefer_unenrolled: bool = False) -> Dict[str, str]:
+    """Lấy cặp student/course hợp lệ từ DB khi frontend không gửi payload demo."""
+    if not prefer_unenrolled:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ce.student_id,
+                       ce.course_id
+                FROM course_enrollments AS ce
+                JOIN users AS u
+                     ON u.user_id = ce.student_id
+                JOIN general_courses AS c
+                     ON c.course_id = ce.course_id
+                WHERE u.is_deleted = FALSE
+                  AND c.is_deleted = FALSE
+                ORDER BY ce.enrolled_at DESC
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+        if row:
+            return {"student_id": row["student_id"], "course_id": row["course_id"]}
+
+    not_enrolled_filter = """
+      AND NOT EXISTS (
+          SELECT 1
+          FROM course_enrollments AS ce
+          WHERE ce.student_id = s.user_id
+            AND ce.course_id = c.course_id
+      )
+    """ if prefer_unenrolled else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT s.user_id AS student_id,
+                   c.course_id AS course_id
+            FROM students AS s
+            JOIN users AS u
+                 ON u.user_id = s.user_id
+            CROSS JOIN general_courses AS c
+            WHERE u.is_deleted = FALSE
+              AND c.is_deleted = FALSE
+              {not_enrolled_filter}
+            ORDER BY u.created_at ASC, c.title ASC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if row:
+            return {"student_id": row["student_id"], "course_id": row["course_id"]}
+        cur.execute(
+            """
+            SELECT ce.student_id,
+                   ce.course_id
+            FROM course_enrollments AS ce
+            JOIN users AS u
+                 ON u.user_id = ce.student_id
+            JOIN general_courses AS c
+                 ON c.course_id = ce.course_id
+            WHERE u.is_deleted = FALSE
+              AND c.is_deleted = FALSE
+            ORDER BY ce.enrolled_at DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+    if not row:
+        raise ValueError("Không tìm thấy cặp student/course hợp lệ trong DB.")
+    return {"student_id": row["student_id"], "course_id": row["course_id"]}
+
+
+def default_lesson_for_course(conn: psycopg.Connection, course_id: str) -> str:
+    """Lấy lesson hợp lệ từ DB cho demo transaction progress + comment."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT lesson_id
+            FROM general_course_lessons AS l
+            JOIN general_course_modules AS m
+                 ON m.module_id = l.module_id
+            WHERE m.course_id = %s::uuid
+            ORDER BY m.order_index ASC, l.order_index ASC
+            LIMIT 1
+            """,
+            (course_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row["lesson_id"]
+        cur.execute(
+            """
+            SELECT lesson_id
+            FROM general_course_lessons
+            ORDER BY title ASC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+    if not row:
+        raise ValueError("Không tìm thấy lesson hợp lệ trong DB.")
+    return row["lesson_id"]
+
+
 # Lấy dấu vân tay dữ liệu để check có mutate hay không.
 def fetch_mutation_fingerprint(conn: psycopg.Connection) -> Dict[str, int]:
     with conn.cursor() as cur:
@@ -739,7 +938,7 @@ def capture_reset_baseline(conn: psycopg.Connection) -> Dict[str, List[Dict[str,
         user_status_expr = ", status" if has_user_status else ""
         cur.execute(
             f"""
-            SELECT user_id, is_deleted{user_status_expr}
+            SELECT user_id, username, is_deleted{user_status_expr}
             FROM users
             ORDER BY user_id ASC
             """
@@ -939,32 +1138,38 @@ def apply_reset(conn: psycopg.Connection) -> Dict[str, Any]:
             )
         counts["restored_student_streaks"] = len(streak_rows)
 
-        user_flags = [(row["is_deleted"], row["user_id"]) for row in baseline["users"]]
-        if user_flags:
+        user_rows = baseline["users"]
+        if user_rows:
             if has_user_status:
-                user_flags_with_status = [
-                    (row["is_deleted"], row.get("status", "active"), row["user_id"])
-                    for row in baseline["users"]
+                user_values = [
+                    (row["username"], row["is_deleted"], row.get("status", "active"), row["user_id"])
+                    for row in user_rows
                 ]
                 cur.executemany(
                     """
                     UPDATE users
-                    SET is_deleted = %s,
+                    SET username = %s,
+                        is_deleted = %s,
                         status = %s
                     WHERE user_id = %s
                     """,
-                    user_flags_with_status,
+                    user_values,
                 )
             else:
+                user_values = [
+                    (row["username"], row["is_deleted"], row["user_id"])
+                    for row in user_rows
+                ]
                 cur.executemany(
                     """
                     UPDATE users
-                    SET is_deleted = %s
+                    SET username = %s,
+                        is_deleted = %s
                     WHERE user_id = %s
                     """,
-                    user_flags,
+                    user_values,
                 )
-        counts["restored_users_is_deleted"] = len(user_flags)
+        counts["restored_users"] = len(user_rows)
 
         course_flags = [(row["is_deleted"], row["course_id"]) for row in baseline["general_courses"]]
         if course_flags:
@@ -1565,8 +1770,14 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        student_id = validate_uuid(payload.get("student_id"), "student_id")
-        course_id = validate_uuid(payload.get("course_id"), "course_id")
+        if not payload:
+            defaults = default_student_course_pair(conn, prefer_unenrolled=True)
+            # Khi frontend không gửi payload, backend tự lấy dữ liệu demo hợp lệ từ DB.
+            student_id = defaults["student_id"]
+            course_id = defaults["course_id"]
+        else:
+            student_id = validate_uuid(payload.get("student_id"), "student_id")
+            course_id = validate_uuid(payload.get("course_id"), "course_id")
 
         emit_sql(run, "validate_input", [
             f"-- [B1] Kiem tra student_id ton tai:",
@@ -1666,6 +1877,12 @@ def run_enroll_pipeline(run: RunState, conn: psycopg.Connection, context: Dict[s
             )
             streak_after = cur.fetchone()
         conn.commit()
+        context["action_data"].update(
+            {
+                "streak_before": context["metrics_before"]["streak_before"],
+                "streak_after": streak_after,
+            }
+        )
         return {
             "streak_before": context["metrics_before"]["streak_before"],
             "streak_after": streak_after,
@@ -1778,11 +1995,20 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        student_id = validate_uuid(payload.get("student_id"), "student_id")
-        course_id = validate_uuid(payload.get("course_id"), "course_id")
-        lesson_id = validate_uuid(payload.get("lesson_id"), "lesson_id")
-        progress_raw = payload.get("progress")
-        comment_text = str(payload.get("comment_text", "")).strip()
+        if not payload:
+            defaults = default_student_course_pair(conn)
+            # Payload rỗng thì chọn cặp học thật và lesson thật từ DB.
+            student_id = defaults["student_id"]
+            course_id = defaults["course_id"]
+            lesson_id = default_lesson_for_course(conn, course_id)
+            progress_raw = "100"
+            comment_text = "Bình luận demo transaction được backend tự chọn từ dữ liệu hợp lệ."
+        else:
+            student_id = validate_uuid(payload.get("student_id"), "student_id")
+            course_id = validate_uuid(payload.get("course_id"), "course_id")
+            lesson_id = validate_uuid(payload.get("lesson_id"), "lesson_id")
+            progress_raw = payload.get("progress")
+            comment_text = str(payload.get("comment_text", "")).strip()
 
         if progress_raw is None:
             raise ValueError("Thiếu trường progress.")
@@ -1897,6 +2123,14 @@ def run_progress_comment_pipeline(run: RunState, conn: psycopg.Connection, conte
             latest_notification = cur.fetchone()
         conn.commit()
         notification_count_before = context["metrics_before"]["notification_count_before"]
+        context["action_data"].update(
+            {
+                "latest_notification": latest_notification,
+                "notification_count_before": notification_count_before,
+                "notification_count_after": notification_count_after,
+                "notification_delta": notification_count_after - notification_count_before,
+            }
+        )
         return {
             "notification_count_before": notification_count_before,
             "notification_count_after": notification_count_after,
@@ -2097,10 +2331,31 @@ def run_trigger_updated_at_pipeline(run: RunState, conn: psycopg.Connection, con
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        user_id = validate_uuid(payload.get("user_id"), "user_id")
+        raw_user_id = payload.get("user_id")
+        if raw_user_id:
+            user_id = validate_uuid(raw_user_id, "user_id")
+        else:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.user_id
+                    FROM users AS u
+                    JOIN roles AS r
+                         ON r.role_id = u.role_id
+                    WHERE u.is_deleted = FALSE
+                      AND r.role_name <> 'ADMIN'
+                    ORDER BY u.created_at ASC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+            if not row:
+                raise ValueError("Không tìm thấy user hợp lệ để demo updated_at.")
+            # Không có payload thì chọn user thật từ DB thay vì fix cứng ID.
+            user_id = row["user_id"]
         new_username = str(payload.get("new_username") or "").strip()
         if not new_username:
-            new_username = f"trigger_user_{int(time.time())}"
+            new_username = f"trigger_user_{uuid.uuid4().hex[:8]}"
 
         with conn.cursor() as cur:
             cur.execute(
@@ -2136,30 +2391,48 @@ def run_trigger_updated_at_pipeline(run: RunState, conn: psycopg.Connection, con
                 $$;
                 """
             )
-            cur.execute("DROP TRIGGER IF EXISTS trg_users_update_timestamp ON users")
             cur.execute("DROP TRIGGER IF EXISTS trg_auto_update_users_timestamp ON users")
+            cur.execute("DROP TRIGGER IF EXISTS trg_users_update_timestamp ON users")
             cur.execute(
                 """
-                CREATE TRIGGER trg_auto_update_users_timestamp
+                CREATE TRIGGER trg_users_update_timestamp
                 BEFORE UPDATE ON users
                 FOR EACH ROW
                 EXECUTE FUNCTION fn_update_timestamp()
                 """
+            )
+            sql_for_console = build_username_update_sql_for_log(
+                data["new_username"],
+                data["user_id"],
+            )
+            # In SQL update that len console de chung minh app khong gui updated_at.
+            print(
+                "\n[DEMO UpdatedAt Trigger] SQL frontend yeu cau backend thuc thi:\n"
+                f"{sql_for_console}\n",
+                flush=True,
             )
             cur.execute(
                 """
                 UPDATE users
                 SET username = %s
                 WHERE user_id = %s::uuid
-                RETURNING user_id, username, updated_at
                 """,
                 (data["new_username"], data["user_id"]),
+            )
+            cur.execute(
+                """
+                SELECT user_id, username, updated_at
+                FROM users
+                WHERE user_id = %s::uuid
+                """,
+                (data["user_id"],),
             )
             user_after = cur.fetchone()
         if not user_after:
             raise ValueError("Khong update duoc user.")
         conn.commit()
         context["action_data"] = {"user_after_update_timestamp": user_after}
+        context["action_data"]["user_before_update_timestamp"] = context["metrics_before"]["user_before"]
         return {"user_after_update_timestamp": user_after}
 
     def step_trigger_check() -> Dict[str, Any]:
@@ -2184,7 +2457,7 @@ def run_trigger_updated_at_pipeline(run: RunState, conn: psycopg.Connection, con
         return {name: len(rows) for name, rows in views_after.items()}
 
     def step_complete() -> Dict[str, Any]:
-        context["message"] = "SESSION 1 done: trigger timestamp da cap nhat updated_at."
+        context["message"] = "SESSION 1 done: trg_users_update_timestamp da cap nhat updated_at."
         return {"status": "done"}
 
     v = context.get("validated") or {}
@@ -2211,11 +2484,12 @@ def run_trigger_updated_at_pipeline(run: RunState, conn: psycopg.Connection, con
         step_index=2,
         step_key="execute_procedure",
         step_name="Update users.username",
-        sql_label="UPDATE users ... RETURNING",
+        sql_label="UPDATE users chi set username",
         sql_lines=[
             "CREATE OR REPLACE FUNCTION fn_update_timestamp() RETURNS TRIGGER ...;",
+            "DROP TRIGGER IF EXISTS trg_auto_update_users_timestamp ON users;",
             "DROP TRIGGER IF EXISTS trg_users_update_timestamp ON users;",
-            "CREATE TRIGGER trg_auto_update_users_timestamp BEFORE UPDATE ON users ...;",
+            "CREATE TRIGGER trg_users_update_timestamp BEFORE UPDATE ON users ...;",
             f"UPDATE users SET username = '{new_name}' WHERE user_id = '{uid}'::uuid;",
             f"SELECT user_id, username, updated_at FROM users WHERE user_id = '{uid}'::uuid;",
         ],
@@ -2225,7 +2499,7 @@ def run_trigger_updated_at_pipeline(run: RunState, conn: psycopg.Connection, con
         run,
         step_index=3,
         step_key="check_trigger_side_effects",
-        step_name="Trigger check: trg_auto_update_users_timestamp",
+        step_name="Trigger check: trg_users_update_timestamp",
         sql_label="Compare updated_at before/after",
         sql_lines=[
             "-- Trigger ngam fn_update_timestamp da chay BEFORE UPDATE",
@@ -2553,9 +2827,9 @@ def run_trigger_publish_guard_pipeline(run: RunState, conn: psycopg.Connection, 
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        course_id = validate_uuid(payload.get("course_id") or "40000000-0000-0000-0000-000000000678", "course_id")
+        course_id = validate_uuid(payload.get("course_id") or "40000000-0000-0000-0000-000000000999", "course_id")
         module_id = validate_uuid(payload.get("module_id") or "41000000-0000-0000-0000-000000000999", "module_id")
-        title = str(payload.get("course_title") or "Khoa hoc Test Trigger").strip()
+        title = str(payload.get("course_title") or "Khoa hoc Test Chan Loi").strip()
 
         with conn.cursor() as cur:
             cur.execute(
@@ -3483,9 +3757,16 @@ def run_update_progress_pipeline(run: RunState, conn: psycopg.Connection, contex
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        student_id = validate_uuid(payload.get("student_id"), "student_id")
-        course_id = validate_uuid(payload.get("course_id"), "course_id")
-        progress_raw = payload.get("progress")
+        if not payload:
+            defaults = default_student_course_pair(conn)
+            # Payload rỗng thì chọn enrollment hợp lệ từ DB, không dùng ID fix cứng.
+            student_id = defaults["student_id"]
+            course_id = defaults["course_id"]
+            progress_raw = "100"
+        else:
+            student_id = validate_uuid(payload.get("student_id"), "student_id")
+            course_id = validate_uuid(payload.get("course_id"), "course_id")
+            progress_raw = payload.get("progress")
         if progress_raw is None:
             raise ValueError("Thieu truong progress.")
         try:
@@ -3559,6 +3840,14 @@ def run_update_progress_pipeline(run: RunState, conn: psycopg.Connection, contex
             latest_notification = cur.fetchone()
         conn.commit()
         before = context["metrics_before"]["notification_before"]
+        context["action_data"].update(
+            {
+                "latest_notification": latest_notification,
+                "notification_before": before,
+                "notification_after": notification_after,
+                "notification_delta": notification_after - before,
+            }
+        )
         return {
             "notification_before": before,
             "notification_after": notification_after,
@@ -3671,7 +3960,27 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        user_id = validate_uuid(payload.get("user_id"), "user_id")
+        if not payload:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.user_id
+                    FROM users AS u
+                    JOIN roles AS r
+                         ON r.role_id = u.role_id
+                    WHERE u.is_deleted = FALSE
+                      AND r.role_name <> 'ADMIN'
+                    ORDER BY u.created_at DESC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+            if not row:
+                raise ValueError("Không tìm thấy user hợp lệ để xóa mềm.")
+            # Payload rỗng thì backend tự chọn user chưa xóa mềm từ DB.
+            user_id = row["user_id"]
+        else:
+            user_id = validate_uuid(payload.get("user_id"), "user_id")
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -3703,7 +4012,10 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
             )
             user_after = cur.fetchone()
         conn.commit()
-        context["action_data"] = {"user_after_soft_delete": user_after}
+        context["action_data"] = {
+            "user_before_soft_delete": context["metrics_before"]["user_before"],
+            "user_after_soft_delete": user_after,
+        }
         return {"user_after_soft_delete": user_after}
 
     def step_trigger_check() -> Dict[str, Any]:
@@ -3782,7 +4094,7 @@ def run_soft_delete_user_pipeline(run: RunState, conn: psycopg.Connection, conte
         run,
         step_index=3,
         step_key="check_trigger_side_effects",
-        step_name="TRIGGER: trg_auto_update_users_timestamp + Kiem tra an",
+        step_name="TRIGGER: trg_users_update_timestamp + Kiem tra an",
         sql_label="Check fn_search_students visibility",
         sql_lines=[
             f"-- TRIGGER da chay: fn_update_timestamp()",
@@ -3828,7 +4140,24 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
     payload = run.payload
 
     def step_validate() -> Dict[str, Any]:
-        course_id = validate_uuid(payload.get("course_id"), "course_id")
+        if not payload:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT course_id
+                    FROM general_courses
+                    WHERE is_deleted = FALSE
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+            if not row:
+                raise ValueError("Không tìm thấy khóa học hợp lệ để xóa mềm.")
+            # Payload rỗng thì backend tự chọn khóa học chưa xóa mềm từ DB.
+            course_id = row["course_id"]
+        else:
+            course_id = validate_uuid(payload.get("course_id"), "course_id")
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -3860,7 +4189,10 @@ def run_soft_delete_course_pipeline(run: RunState, conn: psycopg.Connection, con
             )
             course_after = cur.fetchone()
         conn.commit()
-        context["action_data"] = {"course_after_soft_delete": course_after}
+        context["action_data"] = {
+            "course_before_soft_delete": context["metrics_before"]["course_before"],
+            "course_after_soft_delete": course_after,
+        }
         return {"course_after_soft_delete": course_after}
 
     def step_trigger_check() -> Dict[str, Any]:
@@ -4131,6 +4463,8 @@ def run_worker(run: RunState) -> None:
 
             result = {
                 "ok": True,
+                "action": run.action,
+                "payload": run.payload,
                 "message": message,
                 "trace_summary": run.trace,
                 "tables_before": tables_before,
@@ -4240,11 +4574,479 @@ load_local_env(os.path.join(os.path.dirname(__file__), ".env"))
 
 app = Flask(__name__, static_folder="static")
 
+DEMO_USER_ID = "30000000-0000-0000-0000-000000000001"
+DEMO_COURSE_ID = "40000000-0000-0000-0000-000000000999"
+DEMO_MODULE_ID = "41000000-0000-0000-0000-000000000999"
+DEMO_COURSE_TITLE = "Khoa hoc Test Chan Loi"
+
+
+def demo_json_success(data: Any = None):
+    return jsonify(to_jsonable({"success": True, "data": data if data is not None else {}}))
+
+
+def demo_json_error(message: str, status: int = 200, data: Any = None):
+    payload = {"success": False, "error": message}
+    if data is not None:
+        payload["data"] = data
+    return jsonify(to_jsonable(payload)), status
+
+
+def sql_text_literal(value: Any) -> str:
+    """Format gia tri de in SQL demo ra console, khong dung de ghep SQL execute."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def build_username_update_sql_for_log(username: str, user_id: str) -> str:
+    # Cau SQL demo khong chua updated_at; trigger trong DB se tu cap nhat cot nay.
+    return (
+        "UPDATE users\n"
+        f"SET username = {sql_text_literal(username)}\n"
+        f"WHERE user_id = {sql_text_literal(user_id)}::uuid;"
+    )
+
+
+def ensure_demo_updated_at_trigger(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION fn_update_timestamp()
+            RETURNS TRIGGER
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $$;
+            """
+        )
+        cur.execute("DROP TRIGGER IF EXISTS trg_auto_update_users_timestamp ON users")
+        cur.execute("DROP TRIGGER IF EXISTS trg_users_update_timestamp ON users")
+        cur.execute(
+            """
+            CREATE TRIGGER trg_users_update_timestamp
+            BEFORE UPDATE ON users
+            FOR EACH ROW
+            EXECUTE FUNCTION fn_update_timestamp()
+            """
+        )
+    conn.commit()
+
+
+def ensure_demo_publish_trigger(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION fn_validate_course_publish()
+            RETURNS TRIGGER
+            LANGUAGE plpgsql
+            AS $$
+            DECLARE
+                module_count INTEGER;
+            BEGIN
+                IF NEW.visibility_status = 'PUBLISHED'
+                   AND COALESCE(OLD.visibility_status, '') <> 'PUBLISHED' THEN
+                    SELECT COUNT(*)
+                    INTO module_count
+                    FROM general_course_modules
+                    WHERE course_id = NEW.course_id;
+
+                    IF module_count = 0 THEN
+                        RAISE EXCEPTION
+                            'LOI NGHIEP VU: Khong the publish khoa hoc "%" vi chua co module nao.',
+                            NEW.title;
+                    END IF;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$;
+            """
+        )
+        cur.execute("DROP TRIGGER IF EXISTS trg_before_publish_course ON general_courses")
+        cur.execute(
+            """
+            CREATE TRIGGER trg_before_publish_course
+            BEFORE UPDATE OF visibility_status ON general_courses
+            FOR EACH ROW
+            EXECUTE FUNCTION fn_validate_course_publish()
+            """
+        )
+    conn.commit()
+
+
+def get_demo_user_row(conn: psycopg.Connection, user_id: str = DEMO_USER_ID) -> Dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT u.user_id,
+                   u.username,
+                   u.email,
+                   COALESCE(up.full_name, u.username) AS full_name,
+                   u.updated_at
+            FROM users AS u
+            LEFT JOIN user_profiles AS up
+                   ON up.user_id = u.user_id
+            WHERE u.user_id = %s::uuid
+            """,
+            (user_id,),
+        )
+        return cur.fetchone()
+
+
+def ensure_demo_course_exists(conn: psycopg.Connection, reset_modules: bool) -> Dict[str, Any]:
+    ensure_demo_publish_trigger(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT t.user_id
+            FROM teachers AS t
+            JOIN users AS u
+                 ON u.user_id = t.user_id
+            WHERE u.is_deleted = FALSE
+            ORDER BY u.created_at ASC
+            LIMIT 1
+            """
+        )
+        teacher = cur.fetchone()
+        if not teacher:
+            raise ValueError("Khong co teacher de tao course demo.")
+
+        cur.execute(
+            """
+            SELECT category_id
+            FROM general_course_categories
+            ORDER BY category_id ASC
+            LIMIT 1
+            """
+        )
+        category = cur.fetchone()
+        if not category:
+            raise ValueError("Khong co category de tao course demo.")
+
+        cur.execute(
+            """
+            INSERT INTO general_courses (
+                course_id, teacher_id, category_id, title, visibility_status, is_deleted
+            )
+            VALUES (%s::uuid, %s::uuid, %s, %s, 'DRAFT', FALSE)
+            ON CONFLICT (course_id) DO UPDATE
+            SET teacher_id = EXCLUDED.teacher_id,
+                category_id = EXCLUDED.category_id,
+                title = EXCLUDED.title,
+                visibility_status = 'DRAFT',
+                is_deleted = FALSE
+            """,
+            (DEMO_COURSE_ID, teacher["user_id"], category["category_id"], DEMO_COURSE_TITLE),
+        )
+
+        if reset_modules:
+            cur.execute(
+                "DELETE FROM general_course_modules WHERE course_id = %s::uuid",
+                (DEMO_COURSE_ID,),
+            )
+
+    conn.commit()
+    state = get_demo_course_state(conn)
+    if state is None:
+        raise ValueError("Khong tao duoc course demo.")
+    return state
+
+
+def get_demo_course_state(conn: psycopg.Connection) -> Dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT gc.course_id,
+                   gc.title,
+                   gc.visibility_status,
+                   gc.updated_at,
+                   COUNT(gcm.module_id) AS module_count
+            FROM general_courses AS gc
+            LEFT JOIN general_course_modules AS gcm
+                   ON gcm.course_id = gc.course_id
+            WHERE gc.course_id = %s::uuid
+            GROUP BY gc.course_id, gc.title, gc.visibility_status, gc.updated_at
+            """,
+            (DEMO_COURSE_ID,),
+        )
+        course = cur.fetchone()
+        if not course:
+            return None
+
+        cur.execute(
+            """
+            SELECT module_id, course_id, title, order_index
+            FROM general_course_modules
+            WHERE course_id = %s::uuid
+            ORDER BY order_index ASC, title ASC
+            """,
+            (DEMO_COURSE_ID,),
+        )
+        modules = cur.fetchall()
+
+    return {"course": course, "modules": modules}
+
 
 @app.get("/")
-# Trả trang giao diện chính.
+@app.get("/studio")
+@app.get("/dbms-demo")
+# Trả trang giao diện chính. Các alias giữ cho tab/link cũ không rơi vào 404.
 def index() -> Response:
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.get("/api/demo/views/student-progress")
+def demo_student_progress_view():
+    email = request.args.get("email") or "minh.student@signlearn.local"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT course_title, progress, learning_status
+                    FROM vw_student_progress_report
+                    WHERE email = %s
+                    ORDER BY progress DESC, course_title ASC
+                    """,
+                    (email,),
+                )
+                rows = cur.fetchall()
+        return demo_json_success({
+            "view": "vw_student_progress_report",
+            "columns": ["course_title", "progress", "learning_status"],
+            "rows": rows,
+        })
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.get("/api/demo/views/course-analytics")
+def demo_course_analytics_view():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT course_title, teacher_name, total_students, avg_progress, avg_rating
+                    FROM vw_course_analytics
+                    ORDER BY total_students DESC, avg_progress DESC, course_title ASC
+                    """
+                )
+                rows = cur.fetchall()
+        return demo_json_success({
+            "view": "vw_course_analytics",
+            "columns": ["course_title", "teacher_name", "total_students", "avg_progress", "avg_rating"],
+            "rows": rows,
+        })
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.get("/api/demo/views/top-learners")
+def demo_top_learners_view():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT full_name, current_streak, highest_streak, total_achievements
+                    FROM vw_top_learners_leaderboard
+                    ORDER BY current_streak DESC, total_achievements DESC, full_name ASC
+                    LIMIT 5
+                    """
+                )
+                rows = cur.fetchall()
+        return demo_json_success({
+            "view": "vw_top_learners_leaderboard",
+            "columns": ["full_name", "current_streak", "highest_streak", "total_achievements"],
+            "rows": rows,
+        })
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.get("/api/demo/triggers/user-before")
+@app.get("/api/demo/triggers/user-current")
+def demo_trigger_user_before():
+    user_id = request.args.get("user_id") or DEMO_USER_ID
+    try:
+        with get_db_connection() as conn:
+            # Lay dung user dang duoc chon tren frontend; khong fix cung DEMO_USER_ID.
+            user = get_demo_user_row(conn, user_id)
+        if not user:
+            return demo_json_error(f"Khong tim thay user demo {user_id}.", 404)
+        return demo_json_success({"user": user, "trigger": "trg_users_update_timestamp"})
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.post("/api/demo/triggers/update-username")
+def demo_trigger_update_username():
+    body = request.get_json(silent=True) or {}
+    user_id = str(body.get("user_id") or DEMO_USER_ID).strip()
+    new_username = str(body.get("new_username") or f"student_minh_demo_{uuid.uuid4().hex[:8]}").strip()
+    try:
+        with get_db_connection() as conn:
+            ensure_demo_updated_at_trigger(conn)
+            # Backend update dung user_id frontend chon, nhung khong nhan/set updated_at.
+            before = get_demo_user_row(conn, user_id)
+            if not before:
+                return demo_json_error(f"Khong tim thay user demo {user_id}.", 404)
+            sql_for_console = build_username_update_sql_for_log(new_username, user_id)
+            # In SQL update ra console de thay cau lenh khong he set updated_at.
+            print(
+                "\n[DEMO UpdatedAt Trigger] SQL backend sap thuc thi:\n"
+                f"{sql_for_console}\n",
+                flush=True,
+            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET username = %s
+                    WHERE user_id = %s::uuid
+                    """,
+                    (new_username, user_id),
+                )
+                # Fetch lai sau UPDATE chi de tra ket qua demo; updated_at la do trigger DB tao.
+                cur.execute(
+                    """
+                    SELECT u.user_id,
+                           u.username,
+                           u.email,
+                           COALESCE(up.full_name, u.username) AS full_name,
+                           u.updated_at
+                    FROM users AS u
+                    LEFT JOIN user_profiles AS up
+                           ON up.user_id = u.user_id
+                    WHERE u.user_id = %s::uuid
+                    """,
+                    (user_id,),
+                )
+                after = cur.fetchone()
+            conn.commit()
+        return demo_json_success({
+            "trigger": "trg_users_update_timestamp",
+            "updated_user_id": user_id,
+            "updated_at_changed": before["updated_at"] != after["updated_at"],
+            "sql": sql_for_console,
+        })
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.post("/api/demo/triggers/reset-course-publish-demo")
+def demo_reset_course_publish():
+    try:
+        with get_db_connection() as conn:
+            state = ensure_demo_course_exists(conn, reset_modules=True)
+        return demo_json_success({
+            "trigger": "trg_before_publish_course",
+            "state": state,
+        })
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.post("/api/demo/triggers/publish-without-module")
+def demo_publish_without_module():
+    try:
+        with get_db_connection() as conn:
+            ensure_demo_course_exists(conn, reset_modules=True)
+            ensure_demo_publish_trigger(conn)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE general_courses
+                        SET visibility_status = 'PUBLISHED'
+                        WHERE course_id = %s::uuid
+                        """,
+                        (DEMO_COURSE_ID,),
+                    )
+                conn.commit()
+                state_after = get_demo_course_state(conn)
+                return demo_json_error(
+                    "Trigger khong chan publish course khi chua co module.",
+                    500,
+                )
+            except Exception as exc:
+                blocked_error = str(exc)
+                conn.rollback()
+                state_after = get_demo_course_state(conn)
+        return demo_json_error(blocked_error, 200, {"state": state_after})
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.post("/api/demo/triggers/add-module")
+def demo_add_module():
+    try:
+        with get_db_connection() as conn:
+            ensure_demo_course_exists(conn, reset_modules=False)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM general_course_modules
+                    WHERE course_id = %s::uuid
+                      AND order_index = 1
+                      AND module_id <> %s::uuid
+                    """,
+                    (DEMO_COURSE_ID, DEMO_MODULE_ID),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO general_course_modules (module_id, course_id, title, order_index)
+                    VALUES (%s::uuid, %s::uuid, 'Chuong 1: Gioi thieu', 1)
+                    ON CONFLICT (module_id) DO UPDATE
+                    SET course_id = EXCLUDED.course_id,
+                        title = EXCLUDED.title,
+                        order_index = EXCLUDED.order_index
+                    """,
+                    (DEMO_MODULE_ID, DEMO_COURSE_ID),
+                )
+            conn.commit()
+            state = get_demo_course_state(conn)
+        return demo_json_success({"state": state})
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
+
+
+@app.post("/api/demo/triggers/publish-with-module")
+def demo_publish_with_module():
+    try:
+        with get_db_connection() as conn:
+            ensure_demo_course_exists(conn, reset_modules=False)
+            ensure_demo_publish_trigger(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM general_course_modules
+                    WHERE course_id = %s::uuid
+                    """,
+                    (DEMO_COURSE_ID,),
+                )
+                module_count = cur.fetchone()["total"]
+                if module_count == 0:
+                    raise ValueError("Course demo chua co module. Hay bam Add Module truoc.")
+                cur.execute(
+                    """
+                    UPDATE general_courses
+                    SET visibility_status = 'PUBLISHED'
+                    WHERE course_id = %s::uuid
+                    """,
+                    (DEMO_COURSE_ID,),
+                )
+            conn.commit()
+            state = get_demo_course_state(conn)
+        return demo_json_success({
+            "trigger": "trg_before_publish_course",
+            "state": state,
+        })
+    except Exception as exc:
+        return demo_json_error(str(exc), 500)
 
 
 @app.get("/api/init")
@@ -4254,9 +5056,11 @@ def api_init():
         if not column_exists(conn, "users", "status") or not table_exists(conn, "wallets"):
             ensure_transfer_entities(conn)
         ensure_reset_baseline(conn)
+        lookups = fetch_lookup_data(conn)
         response = {
             "ok": True,
-            "lookups": fetch_lookup_data(conn),
+            "lookups": lookups,
+            "demo_suggestions": fetch_demo_suggestions(conn, lookups),
             "tables": fetch_source_tables(conn),
             "views": fetch_reporting_views(conn),
         }

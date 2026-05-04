@@ -15,7 +15,7 @@ Frontend nhận tiến độ từng bước qua SSE (`EventSource`) và hiển t
 Giao diện chia thành 12 kịch bản riêng đúng theo `procedure_trigger_transaction.sql`:
 
 1. View reports (3 views)
-2. Trigger session 1: `trg_auto_update_users_timestamp`
+2. Trigger session 1: `trg_users_update_timestamp`
 3. Trigger session 2: `trg_after_insert_student`
 4. Trigger session 3: `trg_before_publish_course`
 5. Function `fn_search_students`
@@ -59,6 +59,8 @@ python app.py
 ```
 
 Mở trình duyệt: `http://127.0.0.1:5000`
+
+Trang mặc định là giao diện DBMS Studio 12 screen. Phần Views/Triggers đã được tách nút thao tác chi tiết ngay trong các screen tương ứng.
 
 ## 5) API chính
 - `GET /api/init`: tải lookup + snapshot ban đầu.

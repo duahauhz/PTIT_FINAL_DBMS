@@ -3,20 +3,40 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DBMS Demo — SQL Pipeline Visualizer</title>
+  <title>DBMS Studio - Demo thực thi SQL</title>
+  <link rel="icon" href="data:,">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=phase13">
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════════════ HEADER ══ -->
+<div class="page-frame">
+  <section class="hero-container">
+    <video
+      class="hero-bg-video"
+      src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260424_064411_9e9d7f84-9277-41f4-ab10-59172d89e6be.mp4"
+      poster="https://images.unsplash.com/photo-1557683316-973673baf926?w=1600&q=60"
+      autoplay
+      loop
+      muted
+      playsinline
+      preload="auto"
+      disableRemotePlayback
+      webkit-playsinline="true"
+      x5-playsinline="true"
+      aria-hidden="true"
+    ></video>
+    <div class="hero-video-overlay" aria-hidden="true"></div>
+    <div class="foreground-content">
+
 <header class="app-header">
   <div class="header-brand">
-    <span class="header-icon">⚡</span>
+    <span class="header-icon" aria-hidden="true"></span>
     <div>
-      <div class="header-title">SQL Pipeline Visualizer</div>
-      <div class="header-sub">Demo kịch bản DBMS theo thời gian thực — PostgreSQL</div>
+      <div class="header-title">DBMS Studio</div>
+      <div class="header-sub">Phòng demo procedure, trigger, transaction và reporting view</div>
     </div>
   </div>
   <div class="header-status-bar">
@@ -25,59 +45,58 @@
       <span id="db-status-text">Đang kết nối...</span>
     </div>
     <div class="status-info">
-      Run&nbsp;<code id="run-id-display">—</code>
-      &nbsp;|&nbsp;
-      <span id="run-status-display" class="run-badge badge-idle">Idle</span>
+      Lần chạy <code id="run-id-display">-</code>
+      <span id="run-status-display" class="run-badge badge-idle">Sẵn sàng</span>
     </div>
   </div>
 </header>
 
-<!-- ═══════════════════════════════════════════════════════ BODY ══ -->
 <div class="app-body">
-
-  <!-- ─────────────────────────── SIDEBAR ──────────────── -->
   <aside class="sidebar">
-    <div class="sidebar-section-label">KỊCH BẢN</div>
+    <div class="sidebar-top">
+      <div class="sidebar-section-label">KỊCH BẢN</div>
+      <button class="btn-reset-global" id="btn-reset-global">Khôi phục DB baseline</button>
+    </div>
 
     <nav class="scenario-nav" id="scenario-nav">
       <button class="nav-item active" data-scenario="view_reports">
-        <span class="nav-icon icon-view">◈</span>
+        <span class="nav-icon icon-view">&#10022;</span>
         <div class="nav-text">
-          <span class="nav-name">View Reports</span>
-          <span class="nav-hint">3 Views báo cáo</span>
+          <span class="nav-name">View báo cáo</span>
+          <span class="nav-hint">3 view tổng hợp</span>
         </div>
         <span class="nav-tag tag-view">VIEW</span>
       </button>
 
       <button class="nav-item" data-scenario="trigger_updated_at">
-        <span class="nav-icon icon-proc">T</span>
+        <span class="nav-icon icon-proc">&#9889;</span>
         <div class="nav-text">
           <span class="nav-name">Trigger UpdatedAt</span>
-          <span class="nav-hint">SESSION 1</span>
+          <span class="nav-hint">users.updated_at</span>
         </div>
         <span class="nav-tag tag-proc">TRG</span>
       </button>
 
       <button class="nav-item" data-scenario="trigger_init_streak">
-        <span class="nav-icon icon-proc">T</span>
+        <span class="nav-icon icon-proc">&#9889;</span>
         <div class="nav-text">
-          <span class="nav-name">Trigger Init Streak</span>
-          <span class="nav-hint">SESSION 2</span>
+          <span class="nav-name">Trigger tạo streak</span>
+          <span class="nav-hint">student_streaks</span>
         </div>
         <span class="nav-tag tag-proc">TRG</span>
       </button>
 
       <button class="nav-item" data-scenario="trigger_publish_guard">
-        <span class="nav-icon icon-proc">T</span>
+        <span class="nav-icon icon-proc">&#9889;</span>
         <div class="nav-text">
-          <span class="nav-name">Trigger Publish Guard</span>
-          <span class="nav-hint">SESSION 3</span>
+          <span class="nav-name">Chặn publish rỗng</span>
+          <span class="nav-hint">guard module</span>
         </div>
         <span class="nav-tag tag-proc">TRG</span>
       </button>
 
       <button class="nav-item" data-scenario="search_students">
-        <span class="nav-icon icon-fn">ƒ</span>
+        <span class="nav-icon icon-fn">&#402;</span>
         <div class="nav-text">
           <span class="nav-name">Tìm học viên</span>
           <span class="nav-hint">fn_search_students</span>
@@ -86,389 +105,552 @@
       </button>
 
       <button class="nav-item" data-scenario="search_courses">
-        <span class="nav-icon icon-fn">ƒ</span>
+        <span class="nav-icon icon-fn">&#402;</span>
         <div class="nav-text">
           <span class="nav-name">Tìm khóa học</span>
-          <span class="nav-hint">fn_search_courses_advanced</span>
+          <span class="nav-hint">lọc nâng cao</span>
         </div>
         <span class="nav-tag tag-fn">FUNC</span>
       </button>
 
       <button class="nav-item" data-scenario="enroll">
-        <span class="nav-icon icon-proc">P</span>
+        <span class="nav-icon icon-proc">&#9672;</span>
         <div class="nav-text">
-          <span class="nav-name">Đăng ký KH</span>
-          <span class="nav-hint">sp_enroll_student + TRIGGER</span>
+          <span class="nav-name">Đăng ký học viên</span>
+          <span class="nav-hint">sp_enroll_student</span>
         </div>
         <span class="nav-tag tag-proc">PROC</span>
       </button>
 
       <button class="nav-item" data-scenario="update_progress">
-        <span class="nav-icon icon-proc">P</span>
+        <span class="nav-icon icon-proc">&#9672;</span>
         <div class="nav-text">
           <span class="nav-name">Cập nhật tiến độ</span>
-          <span class="nav-hint">sp_update_course_progress</span>
+          <span class="nav-hint">notify hoàn thành</span>
         </div>
         <span class="nav-tag tag-proc">PROC</span>
       </button>
 
       <button class="nav-item" data-scenario="progress_comment">
-        <span class="nav-icon icon-txn">T</span>
+        <span class="nav-icon icon-txn">&#8605;</span>
         <div class="nav-text">
-          <span class="nav-name">Transaction E2E</span>
-          <span class="nav-hint">BEGIN → CALL → INSERT → COMMIT</span>
+          <span class="nav-name">Progress + Comment</span>
+          <span class="nav-hint">CALL + INSERT</span>
         </div>
         <span class="nav-tag tag-txn">TXN</span>
       </button>
 
       <button class="nav-item" data-scenario="transfer_to_admin">
-        <span class="nav-icon icon-txn">₫</span>
+        <span class="nav-icon icon-txn">&#8605;</span>
         <div class="nav-text">
-          <span class="nav-name">Transfer To Admin</span>
-          <span class="nav-hint">Wallet TXN + Logs</span>
+          <span class="nav-name">Chuyển ví ADMIN</span>
+          <span class="nav-hint">khóa FOR UPDATE</span>
         </div>
         <span class="nav-tag tag-txn">TXN</span>
       </button>
 
       <button class="nav-item" data-scenario="soft_delete_user">
-        <span class="nav-icon icon-del">✕</span>
+        <span class="nav-icon icon-del">&#10005;</span>
         <div class="nav-text">
-          <span class="nav-name">Xóa mềm User</span>
-          <span class="nav-hint">sp_soft_delete_user</span>
+          <span class="nav-name">Xóa mềm user</span>
+          <span class="nav-hint">xóa logic</span>
         </div>
         <span class="nav-tag tag-proc">PROC</span>
       </button>
 
       <button class="nav-item" data-scenario="soft_delete_course">
-        <span class="nav-icon icon-del">✕</span>
+        <span class="nav-icon icon-del">&#10005;</span>
         <div class="nav-text">
-          <span class="nav-name">Xóa mềm Khóa học</span>
-          <span class="nav-hint">sp_soft_delete_course</span>
+          <span class="nav-name">Xóa mềm khóa học</span>
+          <span class="nav-hint">xóa logic</span>
         </div>
         <span class="nav-tag tag-proc">PROC</span>
       </button>
     </nav>
 
     <div class="sidebar-divider"></div>
-
-    <button class="btn-reset-global" id="btn-reset-global">
-      <span>↺</span> Reset DB về mặc định
-    </button>
-
     <div class="sidebar-metrics" id="sidebar-metrics"></div>
   </aside>
 
-  <!-- ──────────────────────────── MAIN ────────────────── -->
   <main class="main-content">
-
-    <!-- ── SCENARIO PANELS ── -->
-
-    <!-- Panel: View Reports -->
-    <div class="scenario-panel active" id="panel-view_reports">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-view">VIEW</span>
-          <h2>Đọc 3 Reporting Views</h2>
-        </div>
-        <p class="panel-desc">Truy vấn 3 view đã tạo sẵn trong DB: <code>vw_student_progress_report</code>, <code>vw_course_analytics</code>, <code>vw_top_learners_leaderboard</code>.</p>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="view_reports" data-scenario="view_reports">▶ Chạy kịch bản</button>
-        </div>
+    <section class="demo-hero demo-hero--compact">
+      <div class="hero-copy">
+        <span class="hero-kicker">PHÒNG DEMO THỰC THI POSTGRESQL</span>
+        <h1>Demo <span>Procedure, Trigger, Transaction & View</span></h1>
+        <p>Chọn kịch bản bên trái → bấm chạy → quan sát sự kiện nghiệp vụ, SQL thực thi và dữ liệu thay đổi trực tiếp.</p>
       </div>
+      <div class="hero-stats">
+        <div><strong>12</strong><span>kịch bản</span></div>
+        <div><strong>4</strong><span>loại SQL</span></div>
+        <div><strong>SSE</strong><span>thời gian thực</span></div>
+      </div>
+    </section>
+
+    <div class="inline-pipeline-bar" id="global-pipeline-bar">
+      <div class="pipeline-bar-label">Pipeline demo</div>
+      <div class="pipeline-track pipeline-track--horizontal" id="pipeline-track"></div>
     </div>
 
-    <!-- Panel: Trigger UpdatedAt -->
-    <div class="scenario-panel" id="panel-trigger_updated_at">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">TRIGGER SESSION 1</span>
-          <h2>Automation UpdatedAt</h2>
-        </div>
-        <p class="panel-desc">Demo riêng trigger <code class="trigger-name">trg_auto_update_users_timestamp</code>: cập nhật <code>users.username</code> và quan sát <code>updated_at</code> tự đổi ngầm.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_auto_update_users_timestamp → users.updated_at</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Chọn user</label>
-          <select class="styled-input" id="tu-user"></select>
-          <label class="input-label">Username mới</label>
-          <input class="styled-input" id="tu-username" type="text" value="student_minh_pro" placeholder="Nhap username moi">
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="trigger_updated_at" data-scenario="trigger_updated_at">▶ Chạy SESSION 1</button>
-        </div>
-      </div>
-    </div>
+    <section class="workspace-single">
+      <div class="workspace-primary">
+        <div class="scenario-panel active" id="panel-view_reports">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-view">VIEW</span>
+              <h2>Đọc reporting views</h2>
+            </div>
+            <div class="concept-box concept-view">
+              <div class="concept-title">📘 Khái niệm: VIEW trong PostgreSQL</div>
+              <p>View là <strong>bảng ảo (virtual table)</strong> được tạo từ câu lệnh SELECT phức tạp. Thay vì viết lại các phép JOIN nhiều bảng mỗi lần, ta đóng gói chúng thành 1 View và truy vấn như bảng thật. View <em>không lưu dữ liệu</em> — mỗi lần gọi sẽ chạy lại query gốc.</p>
+            </div>
+            <p class="panel-desc">Hệ thống có 3 reporting views tổng hợp dữ liệu từ nhiều bảng: <code>vw_student_progress_report</code> (JOIN 5 bảng), <code>vw_course_analytics</code> (JOIN + GROUP BY + subquery), và <code>vw_top_learners_leaderboard</code> (JOIN + correlated subquery).</p>
+            <div class="view-demo-shell">
+              <div class="view-switcher" role="tablist" aria-label="Reporting views">
+                <button class="view-tab active" type="button" data-view-key="studentProgress">Tiến độ học viên</button>
+                <button class="view-tab" type="button" data-view-key="courseAnalytics">Phân tích khóa học</button>
+                <button class="view-tab" type="button" data-view-key="topLearners">Bảng xếp hạng</button>
+              </div>
 
-    <!-- Panel: Trigger Init Streak -->
-    <div class="scenario-panel" id="panel-trigger_init_streak">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">TRIGGER SESSION 2</span>
-          <h2>Init Student Streak</h2>
-        </div>
-        <p class="panel-desc">Demo riêng trigger <code class="trigger-name">trg_after_insert_student</code>: chèn học viên mới và quan sát bản ghi <code>student_streaks</code> được tạo tự động.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_after_insert_student → student_streaks</span>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="trigger_init_streak" data-scenario="trigger_init_streak">▶ Chạy SESSION 2</button>
-        </div>
-      </div>
-    </div>
+              <div class="view-stage">
+                <div class="inline-pipeline-bar view-local-pipeline-bar">
+                  <div class="pipeline-bar-label">Pipeline view</div>
+                  <div class="pipeline-track pipeline-track--horizontal" id="view-pipeline-track"></div>
+                </div>
 
-    <!-- Panel: Trigger Publish Guard -->
-    <div class="scenario-panel" id="panel-trigger_publish_guard">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">TRIGGER SESSION 3</span>
-          <h2>Publish Guard</h2>
-        </div>
-        <p class="panel-desc">Demo riêng trigger <code class="trigger-name">trg_before_publish_course</code>: thử publish khóa học rỗng (bị chặn), sau đó thêm module và publish lại thành công.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_before_publish_course → chặn PUBLISHED khi chưa có module</span>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="trigger_publish_guard" data-scenario="trigger_publish_guard">▶ Chạy SESSION 3</button>
-        </div>
-      </div>
-    </div>
+                <article class="inline-demo-card view-detail-panel active" data-view-panel="studentProgress">
+                  <div class="inline-demo-head">
+                    <span class="panel-badge badge-view">VIEW</span>
+                    <h3>Báo cáo tiến độ học viên</h3>
+                  </div>
+                  <p class="object-name">vw_student_progress_report</p>
+                  <p class="inline-desc">Hiển thị khóa học, tiến độ và trạng thái học bằng cách đóng gói JOIN giữa user, profile, enrollment và course.</p>
+                  <details class="sql-source-block view-source-block">
+                    <summary>Xem CREATE VIEW: Tiến độ học viên</summary>
+                    <pre class="sql-code">CREATE OR REPLACE VIEW vw_student_progress_report AS
+SELECT 
+    up.full_name AS student_name,
+    u.email,
+    s.school_name,
+    c.title AS course_title,
+    ce.progress,
+    ce.enrolled_at,
+    CASE 
+        WHEN ce.progress = 100 THEN 'Hoàn thành'
+        WHEN ce.progress > 0 THEN 'Đang học'
+        ELSE 'Mới đăng ký'
+    END AS learning_status
+FROM users u
+JOIN user_profiles up ON u.user_id = up.user_id
+JOIN students s ON u.user_id = s.user_id
+JOIN course_enrollments ce ON s.user_id = ce.student_id
+JOIN general_courses c ON ce.course_id = c.course_id
+WHERE u.is_deleted = FALSE;</pre>
+                  </details>
+                  <button class="btn-detail btn-view-run" type="button" id="btn-detail-student-progress">Chạy view này</button>
+                  <div class="inline-result" id="detail-student-progress"></div>
+                </article>
 
-    <!-- Panel: Search Students -->
-    <div class="scenario-panel" id="panel-search_students">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-fn">FUNCTION</span>
-          <h2>fn_search_students</h2>
-        </div>
-        <p class="panel-desc">Tìm kiếm học viên full-text theo <em>username</em>, <em>full_name</em> hoặc <em>school_name</em>. Hàm trả về SET OF RECORD, lọc sẵn <code>is_deleted = FALSE</code>.</p>
-        <div class="panel-inputs">
-          <label class="input-label">Từ khóa tìm kiếm</label>
-          <input class="styled-input" id="ss-keyword" type="text" placeholder="Ví dụ: minh, Le Minh, THCS...">
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="search_students" data-scenario="search_students">▶ Chạy kịch bản</button>
-        </div>
-      </div>
-    </div>
+                <article class="inline-demo-card view-detail-panel" data-view-panel="courseAnalytics">
+                  <div class="inline-demo-head">
+                    <span class="panel-badge badge-view">VIEW</span>
+                    <h3>Phân tích khóa học</h3>
+                  </div>
+                  <p class="object-name">vw_course_analytics</p>
+                  <p class="inline-desc">Tổng hợp số học viên đăng ký, tiến độ trung bình và rating trung bình cho dashboard khóa học.</p>
+                  <details class="sql-source-block view-source-block">
+                    <summary>Xem CREATE VIEW: Phân tích khóa học</summary>
+                    <pre class="sql-code">CREATE OR REPLACE VIEW vw_course_analytics AS
+SELECT 
+    c.course_id,
+    c.title AS course_title,
+    up.full_name AS teacher_name,
+    COUNT(ce.enrollment_id) AS total_students,
+    ROUND(AVG(ce.progress), 2) AS avg_progress,
+    (
+        SELECT ROUND(AVG(rating), 1)
+        FROM user_feedbacks
+        WHERE context LIKE '%' || c.title || '%'
+    ) AS avg_rating
+FROM general_courses c
+JOIN teachers t ON c.teacher_id = t.user_id
+JOIN user_profiles up ON t.user_id = up.user_id
+LEFT JOIN course_enrollments ce ON c.course_id = ce.course_id
+WHERE c.is_deleted = FALSE
+GROUP BY c.course_id, c.title, up.full_name;</pre>
+                  </details>
+                  <button class="btn-detail btn-view-run" type="button" id="btn-detail-course-analytics">Chạy view này</button>
+                  <div class="inline-result" id="detail-course-analytics"></div>
+                </article>
 
-    <!-- Panel: Search Courses -->
-    <div class="scenario-panel" id="panel-search_courses">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-fn">FUNCTION</span>
-          <h2>fn_search_courses_advanced</h2>
+                <article class="inline-demo-card view-detail-panel" data-view-panel="topLearners">
+                  <div class="inline-demo-head">
+                    <span class="panel-badge badge-view">VIEW</span>
+                    <h3>Bảng xếp hạng học viên</h3>
+                  </div>
+                  <p class="object-name">vw_top_learners_leaderboard</p>
+                  <p class="inline-desc">Xếp hạng học viên theo streak và số achievement, người demo không phải viết lại subquery.</p>
+                  <details class="sql-source-block view-source-block">
+                    <summary>Xem CREATE VIEW: Bảng xếp hạng</summary>
+                    <pre class="sql-code">CREATE OR REPLACE VIEW vw_top_learners_leaderboard AS
+SELECT 
+    up.full_name,
+    up.avatar_url,
+    ss.current_streak,
+    ss.highest_streak,
+    (
+        SELECT COUNT(*)
+        FROM user_achievements ua
+        WHERE ua.user_id = s.user_id
+    ) AS total_achievements
+FROM students s
+JOIN user_profiles up ON s.user_id = up.user_id
+JOIN student_streaks ss ON s.user_id = ss.student_id
+ORDER BY ss.current_streak DESC, total_achievements DESC;</pre>
+                  </details>
+                  <button class="btn-detail btn-view-run" type="button" id="btn-detail-top-learners">Chạy view này</button>
+                  <div class="inline-result" id="detail-top-learners"></div>
+                </article>
+              </div>
+            </div>
+            <div class="db-explain-box">
+              <strong>Điều gì xảy ra trong database?</strong>
+              <span>Mỗi nút chỉ chạy một view, giúp trình bày từng báo cáo riêng thay vì gộp cả 3 vào một hành động.</span>
+            </div>
+          </div>
         </div>
-        <p class="panel-desc">Tìm kiếm nâng cao kết hợp lọc theo <em>keyword</em>, <em>danh mục</em> và <em>trạng thái</em>. Hàm JOIN 4 bảng, tổng hợp <code>total_students</code> và <code>avg_progress</code>.</p>
-        <div class="panel-inputs">
-          <label class="input-label">Từ khóa</label>
-          <input class="styled-input" id="sc-keyword" type="text" placeholder="ví dụ: giao tiep">
-          <label class="input-label">Danh mục</label>
-          <select class="styled-input" id="sc-category"><option value="">Tất cả</option></select>
-          <label class="input-label">Trạng thái</label>
-          <select class="styled-input" id="sc-status">
-            <option value="">Tất cả</option>
-            <option value="DRAFT">DRAFT</option>
-            <option value="PUBLISHED">PUBLISHED</option>
-            <option value="ARCHIVED">ARCHIVED</option>
-          </select>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="search_courses" data-scenario="search_courses">▶ Chạy kịch bản</button>
-        </div>
-      </div>
-    </div>
 
-    <!-- Panel: Enroll -->
-    <div class="scenario-panel" id="panel-enroll">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">PROCEDURE</span>
-          <h2>sp_enroll_student</h2>
-        </div>
-        <p class="panel-desc">Gọi procedure đăng ký học viên vào khóa học bằng <code>CALL</code>. Hệ thống sẽ kích hoạt Trigger <code class="trigger-name">trg_touch_student_activity_on_enroll</code> → tự động cập nhật <code>student_streaks</code>.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_touch_student_activity_on_enroll → student_streaks</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Học viên</label>
-          <select class="styled-input" id="enroll-student"></select>
-          <label class="input-label">Khóa học</label>
-          <select class="styled-input" id="enroll-course"></select>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="enroll" data-scenario="enroll">▶ Chạy kịch bản</button>
-        </div>
-      </div>
-    </div>
+        <div class="scenario-panel" id="panel-trigger_updated_at">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">TRIGGER SESSION 1</span>
+              <h2>Trigger tự động cập nhật UpdatedAt</h2>
+            </div>
+            <div class="concept-box concept-trigger">
+              <div class="concept-title">⚡ Khái niệm: TRIGGER trong PostgreSQL</div>
+              <p>Trigger là <strong>hàm tự động thực thi</strong> khi có sự kiện INSERT/UPDATE/DELETE xảy ra trên bảng. BEFORE trigger chạy <em>trước</em> khi dữ liệu thay đổi (có thể sửa NEW), AFTER trigger chạy <em>sau</em> khi thay đổi đã commit. Trigger đảm bảo <strong>business rules tự động</strong> mà không cần code ở tầng application.</p>
+            </div>
+            <p class="panel-desc">Khi UPDATE bất kỳ cột nào trên bảng <code>users</code>, trigger <code>trg_users_update_timestamp</code> (BEFORE UPDATE) sẽ <strong>tự động cập nhật</strong> cột <code>updated_at</code> = CURRENT_TIMESTAMP. Quan sát giá trị updated_at TRƯỚC và SAU.</p>
+            <details class="sql-source-block">
+              <summary>📄 Xem mã SQL (CREATE TRIGGER)</summary>
+              <pre class="sql-code">-- Trigger Function: tự động cập nhật updated_at
+CREATE OR REPLACE FUNCTION fn_update_timestamp()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at := CURRENT_TIMESTAMP;
+    RETURN NEW;  -- BEFORE trigger phải RETURN NEW
+END;
+$$;
 
-    <!-- Panel: Update Progress -->
-    <div class="scenario-panel" id="panel-update_progress">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">PROCEDURE</span>
-          <h2>sp_update_course_progress</h2>
-        </div>
-        <p class="panel-desc">Cập nhật tiến độ học. Nếu đạt <code>100%</code>, Trigger <code class="trigger-name">trg_notify_course_completion</code> sẽ tự động INSERT thông báo hoàn thành vào <code>notification_users</code>.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_notify_course_completion → notification_users</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Học viên</label>
-          <select class="styled-input" id="up-student"></select>
-          <label class="input-label">Khóa học</label>
-          <select class="styled-input" id="up-course"></select>
-          <label class="input-label">Tiến độ (%)</label>
-          <input class="styled-input" id="up-progress" type="number" min="0" max="100" step="0.01" value="100">
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="update_progress" data-scenario="update_progress">▶ Chạy kịch bản</button>
-        </div>
-      </div>
-    </div>
+-- Gắn trigger vào bảng users (BEFORE UPDATE)
+CREATE TRIGGER trg_users_update_timestamp
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_update_timestamp();
 
-    <!-- Panel: Transaction -->
-    <div class="scenario-panel" id="panel-progress_comment">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-txn">TRANSACTION</span>
-          <h2>Transaction End-to-End</h2>
+-- Giảng viên chú ý: BEFORE UPDATE → sửa NEW trước khi ghi
+-- FOR EACH ROW → chạy cho mỗi dòng bị UPDATE</pre>
+            </details>
+            <div class="trigger-badge-row"><span class="trigger-badge">🔄 BEFORE UPDATE → tự gán NEW.updated_at</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">User cần sửa</label>
+              <select class="styled-input" id="tu-user"></select>
+              <label class="input-label">Username mới</label>
+              <input class="styled-input" id="tu-username" type="text" value="student_minh_pro" placeholder="student_minh_pro">
+            </div>
+            <div class="panel-actions split-actions">
+              <button class="btn-run" data-action="trigger_updated_at" data-scenario="trigger_updated_at">Chạy demo trigger</button>
+            </div>
+            <div class="db-explain-box">
+              <strong>Điều gì xảy ra trong database?</strong>
+              <span>Câu UPDATE chỉ đổi username. BEFORE UPDATE trigger tự gán NEW.updated_at trước khi PostgreSQL ghi dòng mới.</span>
+            </div>
+          </div>
         </div>
-        <p class="panel-desc">Kịch bản dài nhất: <strong>BEGIN</strong> → Validate → CALL sp_update_course_progress → INSERT comment → kiểm tra trigger side-effects → <strong>COMMIT</strong>. Một trong hai thất bại thì toàn bộ ROLLBACK.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge txn-flow">BEGIN → CALL sp_update_course_progress → INSERT comments → COMMIT</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Học viên</label>
-          <select class="styled-input" id="pc-student"></select>
-          <label class="input-label">Khóa học</label>
-          <select class="styled-input" id="pc-course"></select>
-          <label class="input-label">Bài học</label>
-          <select class="styled-input" id="pc-lesson"></select>
-          <label class="input-label">Tiến độ (%)</label>
-          <input class="styled-input" id="pc-progress" type="number" min="0" max="100" step="0.01" value="100">
-          <label class="input-label">Nội dung bình luận</label>
-          <textarea class="styled-input styled-textarea" id="pc-comment" rows="2">Hoàn thành bài học, cần thêm bài tập nâng cao.</textarea>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="progress_comment" data-scenario="progress_comment">▶ Chạy Transaction</button>
-        </div>
-      </div>
-    </div>
 
-    <!-- Panel: Transfer Wallet To Admin -->
-    <div class="scenario-panel" id="panel-transfer_to_admin">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-txn">TRANSACTION</span>
-          <h2>Wallet Transfer To Admin</h2>
-        </div>
-        <p class="panel-desc">Demo chuyển tiền trực quan: <strong>BEGIN</strong> → khóa ví nguồn/đích (<code>FOR UPDATE</code>) → kiểm tra <code>status=active</code> + số dư → cập nhật số dư → ghi <code>transaction_logs</code> + <code>transaction_action_logs</code> → <strong>COMMIT/ROLLBACK logic</strong>.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge txn-flow">BEGIN → CHECK SOURCE → CHECK ADMIN → UPDATE wallets → INSERT logs → COMMIT/ROLLBACK</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Ví nguồn (không phải ADMIN)</label>
-          <select class="styled-input" id="tx-from-user"></select>
-          <label class="input-label">Ví nhận (ADMIN)</label>
-          <select class="styled-input" id="tx-admin-user"></select>
-          <label class="input-label">Số tiền chuyển</label>
-          <input class="styled-input" id="tx-amount" type="number" min="0.01" step="0.01" value="50.00">
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run" data-action="transfer_to_admin" data-scenario="transfer_to_admin">▶ Chạy Transaction</button>
-        </div>
-      </div>
-    </div>
+        <div class="scenario-panel" id="panel-trigger_init_streak">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">TRIGGER SESSION 2</span>
+              <h2>Trigger tạo streak học viên</h2>
+            </div>
+            <p class="panel-desc">Khi INSERT một student mới vào bảng <code>students</code>, trigger <code>trg_after_insert_student</code> (AFTER INSERT) tự động tạo 1 dòng tương ứng trong bảng <code>student_streaks</code> với streak = 0. Đảm bảo <strong>tính toàn vẹn dữ liệu</strong> — mọi student luôn có streak record.</p>
+            <details class="sql-source-block">
+              <summary>📄 Xem mã SQL (CREATE TRIGGER)</summary>
+              <pre class="sql-code">-- Trigger Function: tự động tạo streak record
+CREATE OR REPLACE FUNCTION fn_init_student_streak()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO student_streaks (student_id, current_streak, highest_streak)
+    VALUES (NEW.user_id, 0, 0);
+    RETURN NEW;  -- AFTER trigger: RETURN không ảnh hưởng
+END;
+$$;
 
-    <!-- Panel: Soft Delete User -->
-    <div class="scenario-panel" id="panel-soft_delete_user">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">PROCEDURE</span>
-          <h2>sp_soft_delete_user</h2>
-        </div>
-        <p class="panel-desc">Xóa mềm tài khoản bằng cách set <code>is_deleted = TRUE</code> — không xóa khỏi DB vật lý. Trigger <code class="trigger-name">trg_auto_update_users_timestamp</code> tự cập nhật <code>updated_at</code>.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_auto_update_users_timestamp → users.updated_at</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Chọn tài khoản cần xóa mềm</label>
-          <select class="styled-input" id="sdu-user"></select>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run btn-danger" data-action="soft_delete_user" data-scenario="soft_delete_user">✕ Xóa mềm User</button>
-        </div>
-      </div>
-    </div>
+-- Gắn trigger vào bảng students (AFTER INSERT)
+CREATE TRIGGER trg_after_insert_student
+    AFTER INSERT ON students
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_init_student_streak();
 
-    <!-- Panel: Soft Delete Course -->
-    <div class="scenario-panel" id="panel-soft_delete_course">
-      <div class="panel-header">
-        <div class="panel-title-group">
-          <span class="panel-badge badge-proc">PROCEDURE</span>
-          <h2>sp_soft_delete_course</h2>
+-- Giảng viên chú ý: AFTER INSERT → chạy SAU khi INSERT thành công
+-- NEW.user_id → lấy ID của student vừa được insert</pre>
+            </details>
+            <div class="trigger-badge-row"><span class="trigger-badge">➕ AFTER INSERT → tự tạo student_streaks row</span></div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="trigger_init_streak" data-scenario="trigger_init_streak">Chạy trigger</button>
+            </div>
+          </div>
         </div>
-        <p class="panel-desc">Xóa mềm khóa học bằng cách set <code>is_deleted = TRUE</code>. Trigger <code class="trigger-name">trg_auto_update_courses_timestamp</code> tự cập nhật <code>updated_at</code>.</p>
-        <div class="trigger-badge-row">
-          <span class="trigger-badge">🔔 TRIGGER: trg_auto_update_courses_timestamp → general_courses.updated_at</span>
-        </div>
-        <div class="panel-inputs">
-          <label class="input-label">Chọn khóa học cần xóa mềm</label>
-          <select class="styled-input" id="sdc-course"></select>
-        </div>
-        <div class="panel-actions">
-          <button class="btn-run btn-danger" data-action="soft_delete_course" data-scenario="soft_delete_course">✕ Xóa mềm Khóa học</button>
-        </div>
-      </div>
-    </div>
 
-    <!-- ── SQL PIPELINE ── -->
-    <div class="main-section">
-      <div class="section-header">
-        <span class="section-icon">⚙</span>
-        <h3>SQL Execution Pipeline</h3>
-        <span class="section-hint">Các bước thực thi theo thời gian thực</span>
-      </div>
-      <div class="pipeline-track" id="pipeline-track"></div>
-    </div>
+        <div class="scenario-panel" id="panel-trigger_publish_guard">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">TRIGGER SESSION 3</span>
+              <h2>Trigger chặn publish khóa học rỗng</h2>
+            </div>
+            <p class="panel-desc">Trigger <code>trg_before_publish_course</code> (BEFORE UPDATE) kiểm tra: nếu khóa học chuyển từ DRAFT → PUBLISHED mà <strong>chưa có module nào</strong>, trigger sẽ <code>RAISE EXCEPTION</code> → PostgreSQL tự động ROLLBACK thao tác. Demo chạy 2 bước: thử publish khóa rỗng bị chặn, thêm module rồi publish lại thành công.</p>
+            <details class="sql-source-block">
+              <summary>📄 Xem mã SQL (CREATE TRIGGER)</summary>
+              <pre class="sql-code">-- Trigger Function: chặn publish khóa học rỗng
+CREATE OR REPLACE FUNCTION fn_validate_course_publish()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    v_module_count INTEGER;
+BEGIN
+    -- Chỉ kiểm tra khi chuyển sang PUBLISHED
+    IF NEW.visibility_status = 'PUBLISHED'
+       AND (OLD.visibility_status IS DISTINCT FROM 'PUBLISHED') THEN
+        SELECT COUNT(*) INTO v_module_count
+        FROM general_course_modules
+        WHERE course_id = NEW.course_id;
 
-    <!-- ── SQL TERMINAL ── -->
-    <div class="main-section terminal-section">
-      <div class="section-header">
-        <span class="section-icon">⬛</span>
-        <h3>SQL Terminal</h3>
-        <span class="section-hint">Streaming — nhận từng bước theo SSE</span>
-        <button class="btn-clear-terminal" id="btn-clear-terminal">Xóa log</button>
+        IF v_module_count = 0 THEN
+            RAISE EXCEPTION 'Cannot publish: course has no modules';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Gắn trigger (BEFORE UPDATE)
+CREATE TRIGGER trg_before_publish_course
+    BEFORE UPDATE ON general_courses
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_course_publish();
+
+-- Giảng viên chú ý: RAISE EXCEPTION → abort transaction
+-- BEFORE UPDATE + RETURN NEW → cho phép hoặc chặn UPDATE</pre>
+            </details>
+            <div class="trigger-badge-row"><span class="trigger-badge">🛡️ BEFORE UPDATE → RAISE EXCEPTION nếu vi phạm</span></div>
+            <div class="panel-actions split-actions wrap-actions">
+              <button class="btn-run" data-action="trigger_publish_guard" data-scenario="trigger_publish_guard">Chạy demo đầy đủ</button>
+            </div>
+            <div class="db-explain-box">
+              <strong>Điều gì xảy ra trong database?</strong>
+              <span>Khi visibility_status chuyển sang PUBLISHED, trigger đếm module của khóa học. Nếu module_count = 0, PostgreSQL raise exception và rollback UPDATE.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-search_students">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-fn">FUNCTION</span>
+              <h2>fn_search_students</h2>
+            </div>
+            <p class="panel-desc">Tìm học viên theo username, họ tên hoặc trường học. Function tự lọc bản ghi đã xóa mềm.</p>
+            <div class="panel-inputs">
+              <label class="input-label">Từ khóa</label>
+              <input class="styled-input" id="ss-keyword" type="text" placeholder="minh, Le Minh, THCS...">
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="search_students" data-scenario="search_students">Chạy function</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-search_courses">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-fn">FUNCTION</span>
+              <h2>fn_search_courses_advanced</h2>
+            </div>
+            <p class="panel-desc">Tìm khóa học theo từ khóa, danh mục và trạng thái. Function JOIN metadata khóa học và tổng hợp tiến độ học viên.</p>
+            <div class="panel-inputs">
+              <label class="input-label">Từ khóa</label>
+              <input class="styled-input" id="sc-keyword" type="text" placeholder="communication">
+              <label class="input-label">Danh mục</label>
+              <select class="styled-input" id="sc-category"><option value="">Tất cả danh mục</option></select>
+              <label class="input-label">Trạng thái</label>
+              <select class="styled-input" id="sc-status">
+                <option value="">Tất cả trạng thái</option>
+                <option value="DRAFT">DRAFT</option>
+                <option value="PUBLISHED">PUBLISHED</option>
+                <option value="ARCHIVED">ARCHIVED</option>
+              </select>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="search_courses" data-scenario="search_courses">Chạy function</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-enroll">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">PROCEDURE</span>
+              <h2>sp_enroll_student</h2>
+            </div>
+            <p class="panel-desc">Gọi procedure đăng ký học và kiểm tra side effect của trigger trong <code>course_enrollments</code> và <code>student_streaks</code>.</p>
+            <div class="trigger-badge-row"><span class="trigger-badge">TRIGGER: touch student activity after enrollment</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">Học viên</label>
+              <select class="styled-input" id="enroll-student"></select>
+              <label class="input-label">Khóa học</label>
+              <select class="styled-input" id="enroll-course"></select>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="enroll" data-scenario="enroll">Chạy procedure</button>
+            </div>
+            <div class="scenario-delta" id="delta-enroll"></div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-update_progress">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">PROCEDURE</span>
+              <h2>sp_update_course_progress</h2>
+            </div>
+            <p class="panel-desc">Cập nhật tiến độ khóa học. Khi đạt 100%, trigger hoàn thành tự insert notification cho học viên.</p>
+            <div class="trigger-badge-row"><span class="trigger-badge">TRIGGER: course completion notification</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">Học viên</label>
+              <select class="styled-input" id="up-student"></select>
+              <label class="input-label">Khóa học</label>
+              <select class="styled-input" id="up-course"></select>
+              <label class="input-label">Tiến độ (%)</label>
+              <input class="styled-input" id="up-progress" type="number" min="0" max="100" step="0.01" value="100">
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="update_progress" data-scenario="update_progress">Chạy procedure</button>
+            </div>
+            <div class="scenario-delta" id="delta-update_progress"></div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-progress_comment">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-txn">TRANSACTION</span>
+              <h2>Transaction cập nhật tiến độ + bình luận</h2>
+            </div>
+            <p class="panel-desc">Chạy một transaction đầy đủ: validate, gọi procedure cập nhật tiến độ, insert bình luận, kiểm tra trigger rồi commit hoặc rollback.</p>
+            <div class="trigger-badge-row"><span class="trigger-badge txn-flow">BEGIN -> CALL -> INSERT comments -> COMMIT</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">Học viên</label>
+              <select class="styled-input" id="pc-student"></select>
+              <label class="input-label">Khóa học</label>
+              <select class="styled-input" id="pc-course"></select>
+              <label class="input-label">Bài học</label>
+              <select class="styled-input" id="pc-lesson"></select>
+              <label class="input-label">Tiến độ (%)</label>
+              <input class="styled-input" id="pc-progress" type="number" min="0" max="100" step="0.01" value="100">
+              <label class="input-label">Bình luận</label>
+              <textarea class="styled-input styled-textarea" id="pc-comment" rows="2">Đã hoàn thành bài học và cần bài luyện tập nâng cao.</textarea>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="progress_comment" data-scenario="progress_comment">Chạy transaction</button>
+            </div>
+            <div class="scenario-delta" id="delta-progress_comment"></div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-transfer_to_admin">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-txn">TRANSACTION</span>
+              <h2>Chuyển tiền về ví ADMIN</h2>
+            </div>
+            <p class="panel-desc">Khóa ví nguồn và ví ADMIN, kiểm tra trạng thái/số dư, cập nhật balance rồi ghi transaction log và action log.</p>
+            <div class="trigger-badge-row"><span class="trigger-badge txn-flow">BEGIN -> FOR UPDATE -> UPDATE wallets -> INSERT logs -> COMMIT</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">Ví nguồn</label>
+              <select class="styled-input" id="tx-from-user"></select>
+              <label class="input-label">Ví ADMIN</label>
+              <select class="styled-input" id="tx-admin-user"></select>
+              <label class="input-label">Số tiền</label>
+              <input class="styled-input" id="tx-amount" type="number" min="0.01" step="0.01" value="50.00">
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run" data-action="transfer_to_admin" data-scenario="transfer_to_admin">Chạy chuyển tiền</button>
+            </div>
+            <div class="scenario-delta" id="delta-transfer_to_admin"></div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-soft_delete_user">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">PROCEDURE</span>
+              <h2>sp_soft_delete_user</h2>
+            </div>
+            <p class="panel-desc">Đặt <code>is_deleted = TRUE</code> mà không xóa vật lý user. Trigger cập nhật timestamp vẫn chạy.</p>
+            <div class="trigger-badge-row"><span class="trigger-badge">TRIGGER: users.updated_at refresh</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">User</label>
+              <select class="styled-input" id="sdu-user"></select>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run btn-danger" data-action="soft_delete_user" data-scenario="soft_delete_user">Chạy xóa mềm</button>
+            </div>
+            <div class="scenario-delta" id="delta-soft_delete_user"></div>
+          </div>
+        </div>
+
+        <div class="scenario-panel" id="panel-soft_delete_course">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-badge badge-proc">PROCEDURE</span>
+              <h2>sp_soft_delete_course</h2>
+            </div>
+            <p class="panel-desc">Đặt <code>is_deleted = TRUE</code> cho khóa học nhưng vẫn giữ lịch sử quan hệ và dữ liệu audit.</p>
+            <div class="trigger-badge-row"><span class="trigger-badge">TRIGGER: general_courses.updated_at refresh</span></div>
+            <div class="panel-inputs">
+              <label class="input-label">Khóa học</label>
+              <select class="styled-input" id="sdc-course"></select>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-run btn-danger" data-action="soft_delete_course" data-scenario="soft_delete_course">Chạy xóa mềm</button>
+            </div>
+            <div class="scenario-delta" id="delta-soft_delete_course"></div>
+          </div>
+        </div>
       </div>
+
+    </section>
+
+    <details class="collapsible-section" id="terminal-details" open>
+      <summary class="collapsible-header">
+        <span class="section-icon">02</span>
+        <div>
+          <h3>Nhật ký SQL</h3>
+          <span class="section-hint">Log SQL realtime — bấm để ẩn/hiện</span>
+        </div>
+        <button class="btn-clear-terminal" id="btn-clear-terminal" onclick="event.stopPropagation()">Xóa log</button>
+      </summary>
       <div class="terminal-window" id="sql-terminal">
-        <div class="terminal-line info">── Sẵn sàng. Chọn kịch bản bên trái và nhấn Chạy ──</div>
+        <div class="terminal-line info">-- Sẵn sàng. Chọn kịch bản và chạy.</div>
       </div>
+    </details>
+
+  </main>
+</div>
+
     </div>
+  </section>
+</div>
 
-    <!-- ── DATA CHANGES ── -->
-    <div class="main-section">
-      <div class="section-header">
-        <span class="section-icon">Δ</span>
-        <h3>Biến Động Bảng Nguồn</h3>
-        <span class="section-hint">Chỉ hiển thị thay đổi thật: thêm, xóa, cập nhật.</span>
-      </div>
-      <div id="tables-delta"></div>
-    </div>
-
-    <!-- ── VIEW CHANGES ── -->
-    <div class="main-section">
-      <div class="section-header">
-        <span class="section-icon">◈</span>
-        <h3>Biến Động Reporting Views</h3>
-        <span class="section-hint">Kết quả view được đánh dấu thay đổi theo từng lần chạy.</span>
-      </div>
-      <div id="views-delta"></div>
-    </div>
-
-  </main><!-- /main -->
-</div><!-- /app-body -->
-
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=phase13"></script>
 </body>
 </html>

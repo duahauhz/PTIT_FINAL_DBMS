@@ -45,6 +45,16 @@ def json_request(method: str, path: str, payload: Dict[str, Any] | None = None, 
         return 0, {"ok": False, "message": str(exc)}
 
 
+def text_request(path: str, timeout: float = 10.0) -> Tuple[int, str]:
+    try:
+        with urllib.request.urlopen(BASE_URL + path, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return 0, str(exc)
+
+
 def wait_server_ready(timeout: float = 20.0) -> bool:
     started = time.time()
     while time.time() - started < timeout:
@@ -289,6 +299,10 @@ def run_case(
 def main() -> int:
     rows: List[Tuple[str, bool, str]] = []
 
+    def add_result(name: str, ok: bool, detail: str) -> None:
+        rows.append((name, ok, detail))
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}", flush=True)
+
     proc = subprocess.Popen(
         [sys.executable, "app.py"],
         cwd=str(DEMO_DIR),
@@ -311,6 +325,7 @@ def main() -> int:
 
         index_text = (DEMO_DIR / "static" / "index.html").read_text(encoding="utf-8")
         appjs_text = (DEMO_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        app_py_text = (DEMO_DIR / "app.py").read_text(encoding="utf-8")
         scenarios = [
             "view_reports",
             "trigger_updated_at",
@@ -325,6 +340,13 @@ def main() -> int:
             "soft_delete_user",
             "soft_delete_course",
         ]
+        detail_scenarios = {
+            "view_reports": [
+                "btn-detail-student-progress",
+                "btn-detail-course-analytics",
+                "btn-detail-top-learners",
+            ],
+        }
         missing = []
         for scenario in scenarios:
             if f'data-scenario="{scenario}"' not in index_text:
@@ -334,12 +356,17 @@ def main() -> int:
             if not (has_output or has_panel):
                 missing.append(f"panel-or-output:{scenario}")
 
-            has_run_btn = (
-                f'data-action="{scenario}" data-scenario="{scenario}"' in index_text
-                or f'data-scenario="{scenario}" data-action="{scenario}"' in index_text
-            )
-            if not has_run_btn:
-                missing.append(f"run-button:{scenario}")
+            if scenario in detail_scenarios:
+                for marker in detail_scenarios[scenario]:
+                    if marker not in index_text:
+                        missing.append(f"detail-control:{scenario}:{marker}")
+            else:
+                has_run_btn = (
+                    f'data-action="{scenario}" data-scenario="{scenario}"' in index_text
+                    or f'data-scenario="{scenario}" data-action="{scenario}"' in index_text
+                )
+                if not has_run_btn:
+                    missing.append(f"run-button:{scenario}")
 
         has_scenario_registry = ("const SUPPORTED_SCENARIOS = [" in appjs_text) or ("const PIPELINE_STEPS = [" in appjs_text)
         if not has_scenario_registry:
@@ -352,6 +379,37 @@ def main() -> int:
         else:
             rows.append(("ui_static_scenarios", True, "all hooks present"))
             print("[PASS] ui_static_scenarios: all hooks present", flush=True)
+
+        view_trigger_contract_missing = []
+        for required in [
+            "vw_student_progress_report",
+            "vw_course_analytics",
+            "vw_top_learners_leaderboard",
+            "trg_users_update_timestamp",
+            "trg_before_publish_course",
+            "detail-student-progress",
+        ]:
+            if required not in index_text:
+                view_trigger_contract_missing.append(f"ui:{required}")
+        for required in [
+            "30000000-0000-0000-0000-000000000001",
+            "40000000-0000-0000-0000-000000000999",
+            "CREATE TRIGGER trg_users_update_timestamp",
+            "CREATE TRIGGER trg_before_publish_course",
+        ]:
+            if required not in app_py_text:
+                view_trigger_contract_missing.append(f"backend:{required}")
+        contract_ok = not view_trigger_contract_missing
+        rows.append((
+            "view_trigger_contract_static",
+            contract_ok,
+            "ok" if contract_ok else ", ".join(view_trigger_contract_missing),
+        ))
+        print(
+            f"[{'PASS' if contract_ok else 'FAIL'}] view_trigger_contract_static: "
+            f"{'ok' if contract_ok else ', '.join(view_trigger_contract_missing)}",
+            flush=True,
+        )
 
         run_case("reset_baseline", "reset", {}, True, rows)
 
@@ -372,6 +430,10 @@ def main() -> int:
             row.get("user_id"): str(row.get("balance"))
             for row in init_data.get("tables", {}).get("wallets", [])
         }
+        baseline_usernames = {
+            row.get("user_id"): row.get("username")
+            for row in init_data.get("lookups", {}).get("users", [])
+        }
         expected_view_keys = {
             "vw_student_progress_report",
             "vw_course_analytics",
@@ -388,8 +450,122 @@ def main() -> int:
         init_view_keys = set(init_views.keys())
         init_ok = (init_view_keys == expected_view_keys) and not bool(init_view_keys & legacy_view_keys)
         init_detail = f"init_views={sorted(init_view_keys)}"
-        rows.append(("init_views_contract", init_ok, init_detail))
-        print(f"[{'PASS' if init_ok else 'FAIL'}] init_views_contract: {init_detail}", flush=True)
+        add_result("init_views_contract", init_ok, init_detail)
+
+        status_root, root_html = text_request("/")
+        add_result(
+            "root_12_screen_page",
+            status_root == 200
+            and "DBMS Studio" in root_html
+            and "btn-detail-student-progress" in root_html
+            and "trigger_publish_guard" in root_html,
+            f"HTTP {status_root}",
+        )
+        alias_details = []
+        alias_ok = True
+        for alias_path in ["/studio", "/dbms-demo"]:
+            status_alias, alias_html = text_request(alias_path)
+            ok_alias = (
+                status_alias == 200
+                and "DBMS Studio" in alias_html
+                and "btn-detail-student-progress" in alias_html
+                and "trigger_publish_guard" in alias_html
+            )
+            alias_ok = alias_ok and ok_alias
+            alias_details.append(f"{alias_path}=HTTP {status_alias}")
+        add_result("root_aliases_current_ui", alias_ok, ", ".join(alias_details))
+
+        dedicated_views_ok = True
+        dedicated_details = []
+        for path, key in [
+            ("/api/demo/views/student-progress", "vw_student_progress_report"),
+            ("/api/demo/views/course-analytics", "vw_course_analytics"),
+            ("/api/demo/views/top-learners", "vw_top_learners_leaderboard"),
+        ]:
+            status_v, data_v = json_request("GET", path, None, timeout=10)
+            ok_v = status_v == 200 and data_v.get("success") is True and data_v.get("data", {}).get("view") == key
+            rows_count = len(data_v.get("data", {}).get("rows", []))
+            dedicated_views_ok = dedicated_views_ok and ok_v and rows_count > 0
+            dedicated_details.append(f"{key}:{rows_count}")
+        add_result("dedicated_view_apis", dedicated_views_ok, ", ".join(dedicated_details))
+
+        status_before, user_before_data = json_request("GET", "/api/demo/triggers/user-before", None, timeout=10)
+        before_user = user_before_data.get("data", {}).get("user", {})
+        status_update, user_update_data = json_request(
+            "POST",
+            "/api/demo/triggers/update-username",
+            {"new_username": f"dedicated_minh_{int(time.time())}"},
+            timeout=10,
+        )
+        update_payload = user_update_data.get("data", {})
+        dedicated_user_ok = (
+            status_before == 200
+            and user_before_data.get("success") is True
+            and before_user.get("user_id") == "30000000-0000-0000-0000-000000000001"
+            and status_update == 200
+            and user_update_data.get("success") is True
+            and update_payload.get("updated_at_changed") is True
+        )
+        add_result(
+            "dedicated_updated_at_api",
+            dedicated_user_ok,
+            f"user={before_user.get('user_id')} changed={update_payload.get('updated_at_changed')}",
+        )
+
+        status_reset_course, reset_course_data = json_request(
+            "POST", "/api/demo/triggers/reset-course-publish-demo", {}, timeout=10
+        )
+        reset_course_state = reset_course_data.get("data", {}).get("state", {}).get("course", {})
+        status_block, block_data = json_request(
+            "POST", "/api/demo/triggers/publish-without-module", {}, timeout=10
+        )
+        status_add, add_data = json_request("POST", "/api/demo/triggers/add-module", {}, timeout=10)
+        status_publish, publish_data = json_request("POST", "/api/demo/triggers/publish-with-module", {}, timeout=10)
+        publish_state = publish_data.get("data", {}).get("state", {}).get("course", {})
+        dedicated_publish_ok = (
+            status_reset_course == 200
+            and reset_course_data.get("success") is True
+            and reset_course_state.get("visibility_status") == "DRAFT"
+            and status_block == 200
+            and block_data.get("success") is False
+            and status_add == 200
+            and add_data.get("success") is True
+            and status_publish == 200
+            and publish_data.get("success") is True
+            and publish_state.get("visibility_status") == "PUBLISHED"
+        )
+        add_result(
+            "dedicated_publish_trigger_api",
+            dedicated_publish_ok,
+            (
+                f"reset={reset_course_state.get('visibility_status')} "
+                f"blocked={block_data.get('success') is False} "
+                f"published={publish_state.get('visibility_status')}"
+            ),
+        )
+        status_cleanup_course, cleanup_course_data = json_request(
+            "POST", "/api/demo/triggers/reset-course-publish-demo", {}, timeout=10
+        )
+        cleanup_state = cleanup_course_data.get("data", {}).get("state", {}).get("course", {})
+        add_result(
+            "dedicated_course_cleanup",
+            status_cleanup_course == 200
+            and cleanup_course_data.get("success") is True
+            and cleanup_state.get("visibility_status") == "DRAFT",
+            f"status={cleanup_state.get('visibility_status')} modules={cleanup_state.get('module_count')}",
+        )
+
+        def reset_dedicated_check(_events, result):
+            target_user_id = "30000000-0000-0000-0000-000000000001"
+            expected_username = baseline_usernames.get(target_user_id)
+            users_after = result.get("tables_after", {}).get("users", [])
+            actual = next(
+                (row.get("username") for row in users_after if row.get("user_id") == target_user_id),
+                None,
+            )
+            return actual == expected_username, f"user={target_user_id} username={actual} expected={expected_username}"
+
+        run_case("reset_after_dedicated_view_trigger", "reset", {}, True, rows, reset_dedicated_check)
 
         def readonly_check(_events, result):
             step = trace_step(result, "check_trigger_side_effects")
@@ -426,6 +602,18 @@ def main() -> int:
             rows,
             trigger_updated_at_check,
         )
+
+        def reset_username_check(_events, result):
+            target_user_id = payloads["trigger_updated_at"]["user_id"]
+            expected_username = baseline_usernames.get(target_user_id)
+            users_after = result.get("tables_after", {}).get("users", [])
+            actual = next(
+                (row.get("username") for row in users_after if row.get("user_id") == target_user_id),
+                None,
+            )
+            return actual == expected_username, f"user={target_user_id} username={actual} expected={expected_username}"
+
+        run_case("reset_after_trigger_updated_at", "reset", {}, True, rows, reset_username_check)
 
         def trigger_init_streak_check(_events, result):
             after = (result.get("action_data", {}) or {}).get("streak_after_insert_student") or {}

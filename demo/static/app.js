@@ -2,12 +2,12 @@
 
 // Danh sach buoc pipeline hien tren giao dien.
 const PIPELINE_STEPS = [
-  { key: 'validate_input',             name: 'Validate Input' },
-  { key: 'execute_procedure',          name: 'Execute SQL / CALL' },
-  { key: 'check_trigger_side_effects', name: 'Trigger Side-Effects' },
-  { key: 'refresh_source_tables',      name: 'Read Tables' },
-  { key: 'refresh_reporting_views',    name: 'Read Views' },
-  { key: 'complete',                   name: 'Complete' },
+  { key: 'validate_input',             name: 'Kiểm tra đầu vào' },
+  { key: 'execute_procedure',          name: 'Chạy SQL / CALL' },
+  { key: 'check_trigger_side_effects', name: 'Kiểm tra trigger' },
+  { key: 'refresh_source_tables',      name: 'Đọc bảng nguồn' },
+  { key: 'refresh_reporting_views',    name: 'Đọc view báo cáo' },
+  { key: 'complete',                   name: 'Hoàn tất' },
 ];
 
 // Bang lien quan theo tung kich ban.
@@ -48,11 +48,30 @@ const ROW_KEY_FIELDS = {
 let currentRunId = null;
 let currentEventSrc = null;
 let activeScenario = 'view_reports';
+let demoSuggestions = {};
+
+const SCENARIO_LABELS = {
+  view_reports: 'View báo cáo',
+  trigger_updated_at: 'Trigger cập nhật thời gian',
+  trigger_init_streak: 'Trigger tạo streak',
+  trigger_publish_guard: 'Trigger chặn publish',
+  search_students: 'Tìm học viên',
+  search_courses: 'Tìm khóa học',
+  enroll: 'Đăng ký học viên',
+  update_progress: 'Cập nhật tiến độ',
+  progress_comment: 'Transaction tiến độ + bình luận',
+  transfer_to_admin: 'Chuyển tiền về ví ADMIN',
+  soft_delete_user: 'Xóa mềm user',
+  soft_delete_course: 'Xóa mềm khóa học',
+  reset: 'Khôi phục dữ liệu demo',
+};
 
 const $ = id => document.getElementById(id);
 const el = {
   terminal: $('sql-terminal'),
+  pipelineBar: $('global-pipeline-bar'),
   pipelineTrack: $('pipeline-track'),
+  viewPipelineTrack: $('view-pipeline-track'),
   runId: $('run-id-display'),
   runStatus: $('run-status-display'),
   dbStatus: $('db-status-text'),
@@ -83,6 +102,41 @@ const el = {
   sdcCourse: $('sdc-course'),
 };
 
+const VIEW_DETAIL_RUNS = {
+  studentProgress: {
+    endpoint: '/api/demo/views/student-progress',
+    targetId: 'detail-student-progress',
+    label: 'Student Progress Report',
+    sqlLines: [
+      'SELECT course_title, progress, learning_status',
+      'FROM vw_student_progress_report',
+      "WHERE email = 'minh.student@signlearn.local'",
+      'ORDER BY progress DESC, course_title ASC;',
+    ],
+  },
+  courseAnalytics: {
+    endpoint: '/api/demo/views/course-analytics',
+    targetId: 'detail-course-analytics',
+    label: 'Course Analytics',
+    sqlLines: [
+      'SELECT course_title, teacher_name, total_students, avg_progress, avg_rating',
+      'FROM vw_course_analytics',
+      'ORDER BY total_students DESC, avg_progress DESC, course_title ASC;',
+    ],
+  },
+  topLearners: {
+    endpoint: '/api/demo/views/top-learners',
+    targetId: 'detail-top-learners',
+    label: 'Top Learners Leaderboard',
+    sqlLines: [
+      'SELECT full_name, current_streak, highest_streak, total_achievements',
+      'FROM vw_top_learners_leaderboard',
+      'ORDER BY current_streak DESC, total_achievements DESC, full_name ASC',
+      'LIMIT 5;',
+    ],
+  },
+};
+
 function esc(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -93,6 +147,10 @@ function esc(s) {
 function normalizeCell(v) {
   if (v === null || v === undefined) return 'NULL';
   return String(v);
+}
+
+function pause(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function valueEquals(a, b) {
@@ -109,7 +167,7 @@ function setRunStatus(text, cls = 'idle') {
 }
 
 function setDbStatus(ok) {
-  el.dbStatus.textContent = ok ? 'PostgreSQL da ket noi' : 'Mat ket noi DB';
+  el.dbStatus.textContent = ok ? 'Đã kết nối PostgreSQL' : 'Database đang offline';
   const dot = el.dbChip.querySelector('.chip-dot');
   if (dot) dot.className = `chip-dot${ok ? '' : ' error'}`;
 }
@@ -143,54 +201,84 @@ function termClear() {
   el.terminal.innerHTML = '';
 }
 
-function buildPipeline() {
-  el.pipelineTrack.innerHTML = '';
+function buildPipeline(track = el.pipelineTrack, idPrefix = '') {
+  if (!track) return;
+  track.innerHTML = '';
   PIPELINE_STEPS.forEach((step, idx) => {
     const node = document.createElement('div');
     node.className = 'step-node';
 
     const card = document.createElement('div');
     card.className = 'step-card';
-    card.id = `step-${step.key}`;
+    card.id = `${idPrefix}step-${step.key}`;
+    card.dataset.stepKey = step.key;
     card.innerHTML = `
-      <div class="step-label">Buoc ${idx + 1}</div>
-      <div class="step-name">${esc(step.name)}</div>
-      <div class="step-status-dot pending">○ Cho</div>
-      <div class="step-duration"></div>
+      <span class="step-status-dot pending">○</span>
+      <span class="step-name">${esc(step.name)}</span>
+      <span class="step-label">Bước ${idx + 1}</span>
+      <span class="step-duration"></span>
     `;
     node.appendChild(card);
 
     if (idx < PIPELINE_STEPS.length - 1) {
       const arrow = document.createElement('div');
       arrow.className = 'step-arrow';
-      arrow.id = `arrow-${step.key}`;
+      arrow.id = `${idPrefix}arrow-${step.key}`;
       node.appendChild(arrow);
     }
 
-    el.pipelineTrack.appendChild(node);
+    track.appendChild(node);
   });
 }
 
-function resetPipeline() {
-  el.pipelineTrack.querySelectorAll('.step-card').forEach(card => {
+function buildScenarioPipeline(container, scenario) {
+  const track = typeof container === 'string' ? $(container) : container;
+  const prefix = `${scenario}-`;
+  buildPipeline(track, prefix);
+  return { track, prefix };
+}
+
+function scenarioPipeline(scenario) {
+  if (scenario === 'view_reports') {
+    return { track: el.viewPipelineTrack, prefix: 'view-' };
+  }
+  const track = $(`pipeline-track-${scenario}`);
+  return { track: track || el.pipelineTrack, prefix: track ? `${scenario}-` : '' };
+}
+
+function resetPipeline(track = el.pipelineTrack, idPrefix = '') {
+  if (!track) return;
+  track.querySelectorAll('.step-card').forEach(card => {
     card.className = 'step-card';
     const dot = card.querySelector('.step-status-dot');
     const dur = card.querySelector('.step-duration');
     const stepName = card.querySelector('.step-name');
     dot.className = 'step-status-dot pending';
-    dot.textContent = '○ Cho';
+    dot.textContent = '○';
     dur.textContent = '';
-    const stepDef = PIPELINE_STEPS.find(s => `step-${s.key}` === card.id);
+    const key = card.dataset.stepKey || card.id.replace(`${idPrefix}step-`, '');
+    const stepDef = PIPELINE_STEPS.find(s => s.key === key);
     if (stepDef) stepName.textContent = stepDef.name;
   });
 
-  el.pipelineTrack.querySelectorAll('.step-arrow').forEach(a => {
+  track.querySelectorAll('.step-arrow').forEach(a => {
     a.className = 'step-arrow';
   });
 }
 
-function updateStep(stepKey, status, durationMs, stepName) {
-  const card = $(`step-${stepKey}`);
+function translatePipelineName(stepKey, rawName) {
+  const name = String(rawName || '').toLowerCase();
+  if (name.includes('trigger')) return 'Kiểm tra trigger';
+  if (name.includes('refresh source') || name.includes('source table') || name.includes('bảng nguồn')) return 'Đọc bảng nguồn';
+  if (name.includes('refresh reporting') || name.includes('view') || name.includes('rowset')) return 'Đọc view báo cáo';
+  if (name.includes('complete') || name.includes('finalize') || name.includes('hoàn tất')) return 'Hoàn tất';
+  if (name.includes('execute') || name.includes('call') || name.includes('select') || name.includes('transaction') || name.includes('update')) return 'Chạy SQL / CALL';
+  if (name.includes('validate') || name.includes('prepare') || name.includes('kiểm tra') || name.includes('chuẩn bị')) return 'Kiểm tra đầu vào';
+  return PIPELINE_STEPS.find(step => step.key === stepKey)?.name || rawName || '';
+}
+
+function updateStep(stepKey, status, durationMs, stepName, track = el.pipelineTrack, idPrefix = '') {
+  const card = document.getElementById(`${idPrefix}step-${stepKey}`);
   if (!card) return;
 
   card.classList.remove('running', 'success', 'error');
@@ -199,21 +287,21 @@ function updateStep(stepKey, status, durationMs, stepName) {
   const dot = card.querySelector('.step-status-dot');
   dot.className = `step-status-dot ${status}`;
   const labels = {
-    running: '◉ Running...',
-    success: '✓ Done',
-    error: '✕ Error',
-    pending: '○ Cho',
+    running: '◉',
+    success: '✓',
+    error: '✕',
+    pending: '○',
   };
   dot.textContent = labels[status] || status;
 
   if (durationMs != null) {
-    card.querySelector('.step-duration').textContent = `${durationMs} ms`;
+    card.querySelector('.step-duration').textContent = `${durationMs}ms`;
   }
   if (stepName) {
-    card.querySelector('.step-name').textContent = stepName;
+    card.querySelector('.step-name').textContent = translatePipelineName(stepKey, stepName);
   }
 
-  const arrow = $(`arrow-${stepKey}`);
+  const arrow = document.getElementById(`${idPrefix}arrow-${stepKey}`);
   if (arrow && status !== 'pending') arrow.className = 'step-arrow active';
 }
 
@@ -348,7 +436,7 @@ function renderSnapshotDataset(container, dataObj, relevantTables) {
 
   const entries = Object.entries(dataObj || {});
   if (entries.length === 0) {
-    container.innerHTML = '<div class="empty-note">Khong co du lieu.</div>';
+    container.innerHTML = '<div class="empty-note">No data available.</div>';
     return;
   }
 
@@ -365,12 +453,12 @@ function renderSnapshotDataset(container, dataObj, relevantTables) {
     block.innerHTML = `
       <div class="dataset-title">
         <span>${esc(name)}</span>
-        <span class="dataset-count">${safeRows.length} rows</span>
+        <span class="dataset-count">${safeRows.length} dòng</span>
       </div>
     `;
 
     if (safeRows.length === 0) {
-      block.innerHTML += '<div class="empty-note">Khong co ban ghi.</div>';
+      block.innerHTML += '<div class="empty-note">Không có dòng dữ liệu.</div>';
       container.appendChild(block);
       continue;
     }
@@ -418,12 +506,12 @@ function renderDeltaDataset(container, beforeObj, afterObj, relevantTables, opti
       renderSnapshotDataset(container, afterData, relevantTables);
       container.insertAdjacentHTML(
         'afterbegin',
-        '<div class="delta-empty">Khong co thay doi. Dang hien thi snapshot hien tai.</div>'
+        '<div class="delta-empty">Không có thay đổi. Đang hiển thị snapshot hiện tại.</div>'
       );
       return;
     }
 
-    container.innerHTML = '<div class="delta-empty">Khong co thay doi du lieu sau lan chay nay.</div>';
+    container.innerHTML = '<div class="delta-empty">Không có thay đổi dữ liệu sau lần chạy này.</div>';
     return;
   }
 
@@ -436,7 +524,7 @@ function renderDeltaDataset(container, beforeObj, afterObj, relevantTables, opti
     titleEl.className = 'dataset-title';
     titleEl.innerHTML = `
       <span>${esc(tableName)}</span>
-      <span class="dataset-count">${rowTotal} rows</span>
+      <span class="dataset-count">${rowTotal} dòng</span>
       <span class="delta-badges">${renderStatusBadges(diff.stats)}</span>
     `;
     block.appendChild(titleEl);
@@ -445,7 +533,7 @@ function renderDeltaDataset(container, beforeObj, afterObj, relevantTables, opti
     if (changedRows.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty-note';
-      empty.textContent = 'Khong co ban ghi thay doi.';
+      empty.textContent = 'Không có dòng thay đổi.';
       block.appendChild(empty);
       container.appendChild(block);
       continue;
@@ -464,7 +552,7 @@ function renderDeltaDataset(container, beforeObj, afterObj, relevantTables, opti
         </thead>
         <tbody>
           ${changedRows.map(item => {
-            const statusLabel = item.status === 'added' ? '+ added' : item.status === 'removed' ? '- removed' : '~ updated';
+            const statusLabel = item.status === 'added' ? '+ thêm' : item.status === 'removed' ? '- xóa' : '~ cập nhật';
             const rowClass = `row-${item.status}`;
             const cells = cols.map(col => {
               const cls = item.changedFields.has(col) ? 'cell-updated' : '';
@@ -481,13 +569,320 @@ function renderDeltaDataset(container, beforeObj, afterObj, relevantTables, opti
   }
 }
 
+function ensureScenarioDemoAreas() {
+  document.querySelectorAll('.scenario-panel').forEach(panel => {
+    const scenario = panel.id.replace('panel-', '');
+    if (scenario === 'view_reports') return;
+    if (panel.querySelector('.scenario-demo-shell')) return;
+
+    const shell = document.createElement('div');
+    shell.className = 'scenario-demo-shell';
+    shell.innerHTML = `
+      <div class="inline-pipeline-bar scenario-local-pipeline">
+        <div class="pipeline-bar-label">Pipeline demo</div>
+        <div class="pipeline-track pipeline-track--horizontal" id="pipeline-track-${esc(scenario)}"></div>
+      </div>
+      <div class="scenario-result" id="scenario-result-${esc(scenario)}">
+        <div class="demo-result-titleline"><span>Kết quả demo</span><strong>${esc(SCENARIO_LABELS[scenario] || scenario)}</strong></div>
+        <div class="inline-empty">Chọn dữ liệu và bấm chạy để xem sự kiện nghiệp vụ.</div>
+      </div>
+    `;
+
+    const oldDelta = panel.querySelector('.scenario-delta');
+    if (oldDelta) {
+      oldDelta.classList.add('technical-delta');
+      oldDelta.before(shell);
+    } else {
+      panel.querySelector('.panel-header')?.appendChild(shell);
+    }
+    buildScenarioPipeline(shell.querySelector('.pipeline-track'), scenario);
+  });
+}
+
+function demoResultNode(scenario) {
+  return $(`scenario-result-${scenario}`);
+}
+
+function scenarioResultPending(scenario) {
+  const node = demoResultNode(scenario);
+  return !!node && node.innerText.includes('Đang chạy demo nghiệp vụ');
+}
+
+function scheduleResultLoad(runId, relevantTables, scenario) {
+  loadResult(runId, relevantTables, scenario);
+  [700, 1800, 4200].forEach(delayMs => {
+    setTimeout(() => {
+      if (scenarioResultPending(scenario)) {
+        loadResult(runId, relevantTables, scenario);
+      }
+    }, delayMs);
+  });
+}
+
+function compactRow(row, fields) {
+  if (!row) return '<div class="inline-empty">Không có dữ liệu.</div>';
+  const keys = fields && fields.length ? fields : Object.keys(row);
+  return `
+    <div class="demo-kv-grid">
+      ${keys.map(key => `
+        <div class="demo-kv-item">
+          <span>${esc(key)}</span>
+          <strong>${esc(normalizeCell(row[key]))}</strong>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderBeforeAfterCard(title, before, after, highlights = []) {
+  return `
+    <section class="demo-card-wide">
+      <div class="demo-section-title">${esc(title)}</div>
+      <div class="demo-before-after">
+        <div>
+          <h4>Trước</h4>
+          ${compactRow(before)}
+        </div>
+        <div>
+          <h4>Sau</h4>
+          ${compactRow(after)}
+          ${highlights.length ? `<div class="demo-highlight-note">${highlights.map(esc).join(' • ')}</div>` : ''}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderEventTimeline(steps) {
+  return `
+    <div class="demo-event-timeline">
+      ${steps.map((step, idx) => `
+        <div class="demo-event-step ${step.state || 'done'}">
+          <span>${idx + 1}</span>
+          <div>
+            <strong>${esc(step.title)}</strong>
+            <p>${esc(step.detail || '')}</p>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderMiniTable(rows, columns) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (safeRows.length === 0) return '<div class="inline-empty">Không có dòng nào khớp điều kiện.</div>';
+  const cols = columns && columns.length ? columns : Object.keys(safeRows[0] || {});
+  return `
+    <div class="view-result-table-wrap demo-table-wrap">
+      <table class="inline-table view-result-table">
+        <thead><tr>${cols.map(col => `<th>${esc(col)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${safeRows.map(row => `<tr>${cols.map(col => `<td>${esc(normalizeCell(row[col]))}</td>`).join('')}</tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function firstChangedRow(beforeRows, afterRows, table, predicate) {
+  const rows = afterRows?.[table] || [];
+  if (predicate) return rows.find(predicate) || null;
+  const diff = diffRows(table, beforeRows?.[table] || [], rows);
+  const changed = diff.items.find(item => item.status !== 'unchanged');
+  return changed ? changed.row : null;
+}
+
+function findRow(rows, predicate) {
+  return (rows || []).find(predicate) || null;
+}
+
+function findByField(dataset, table, field, value) {
+  if (!value) return null;
+  return findRow(dataset?.[table], row => normalizeCell(row[field]) === normalizeCell(value));
+}
+
+function latestFromTable(dataset, table) {
+  const rows = dataset?.[table] || [];
+  return rows.length ? rows[0] : null;
+}
+
+function payloadValue(result, key, fallback = '') {
+  const value = result?.payload?.[key];
+  if (value === null || value === undefined || value === '') return fallback;
+  return value;
+}
+
+function scenarioInputValue(inputEl, fallback = '') {
+  if (!inputEl) return fallback;
+  return inputEl.value || fallback;
+}
+
+function transferAmount(ad) {
+  return ad.transfer_result?.tx_amount
+    || ad.transfer_result?.amount
+    || ad.transaction_log?.amount
+    || 'NULL';
+}
+
+function renderScenarioResult(scenario, result) {
+  const node = demoResultNode(scenario);
+  if (!node) return;
+  const ad = result.action_data || {};
+  const before = result.tables_before || {};
+  const after = result.tables_after || {};
+  const title = SCENARIO_LABELS[scenario] || 'Kịch bản demo';
+  let html = '';
+
+  switch (scenario) {
+    case 'trigger_updated_at': {
+      const afterUser = ad.user_after_update_timestamp || firstChangedRow(before, after, 'users');
+      const userId = afterUser?.user_id || payloadValue(result, 'user_id', scenarioInputValue(el.tuUser));
+      const beforeUser = ad.user_before_update_timestamp || findByField(before, 'users', 'user_id', userId);
+      html = `
+        <div class="demo-result-header"><span class="view-result-status">TRIGGER</span><strong>${esc(title)}</strong><span>Frontend chỉ gửi username, không gửi updated_at</span></div>
+        ${renderBeforeAfterCard('User đang chọn', beforeUser, afterUser, ['SQL backend không SET updated_at', 'Trigger trong DB tự đổi updated_at'])}
+      `;
+      break;
+    }
+    case 'search_students': {
+      const rows = ad.search_students_rows || [];
+      const keyword = payloadValue(result, 'keyword', scenarioInputValue(el.ssKeyword, 'Tất cả'));
+      html = `
+        <div class="demo-result-header"><span class="view-result-status">CHỈ ĐỌC</span><strong>Function fn_search_students</strong><span>Từ khóa: ${esc(keyword || 'Tất cả')}</span><span>${rows.length} kết quả</span></div>
+        ${rows.length === 0 ? '<div class="inline-empty">Không có học viên khớp keyword này. Chọn chip gợi ý khác rồi chạy lại.</div>' : ''}
+        ${renderMiniTable(rows, ['student_id', 'username', 'full_name', 'grade_level', 'school_name'])}
+      `;
+      break;
+    }
+    case 'search_courses': {
+      const rows = ad.search_courses_rows || [];
+      const keyword = payloadValue(result, 'keyword', scenarioInputValue(el.scKeyword, 'Tất cả'));
+      const status = payloadValue(result, 'status', scenarioInputValue(el.scStatus, 'Tất cả'));
+      html = `
+        <div class="demo-result-header"><span class="view-result-status">CHỈ ĐỌC</span><strong>Function fn_search_courses_advanced</strong><span>Từ khóa: ${esc(keyword || 'Tất cả')}</span><span>Trạng thái: ${esc(status || 'Tất cả')}</span><span>${rows.length} kết quả</span></div>
+        ${rows.length === 0 ? '<div class="inline-empty">Không có khóa học khớp bộ lọc này. Chọn chip gợi ý khác rồi chạy lại.</div>' : ''}
+        ${renderMiniTable(rows, ['course_id', 'title', 'teacher_name', 'category_name', 'visibility_status', 'total_students', 'avg_progress'])}
+      `;
+      break;
+    }
+    case 'trigger_init_streak': {
+      html = `
+        ${renderEventTimeline([
+          { title: 'Trước INSERT', detail: `User/student/streak demo được làm sạch. Streak tồn tại trước: ${normalizeCell(ad.streak_before_insert_student)}` },
+          { title: 'INSERT INTO students', detail: 'Sự kiện AFTER INSERT trên bảng students xảy ra.' },
+          { title: 'Trigger tạo student_streaks', detail: `current_streak = ${normalizeCell(ad.streak_after_insert_student?.current_streak)}` },
+        ])}
+        ${renderBeforeAfterCard('Dòng student_streaks do trigger tạo', null, ad.streak_after_insert_student, ['Không insert trực tiếp vào student_streaks từ frontend'])}
+      `;
+      break;
+    }
+    case 'trigger_publish_guard': {
+      html = `
+        ${renderEventTimeline([
+          { title: 'Course DRAFT, chưa có module', detail: 'Chuẩn bị khóa học demo với module_count = 0.' },
+          { title: 'Thử publish khóa rỗng', detail: ad.blocked_publish_error ? 'Trigger chặn và rollback UPDATE.' : 'Không thấy lỗi chặn publish.', state: ad.blocked_publish_error ? 'error' : 'done' },
+          { title: 'Thêm module', detail: `module_count = ${normalizeCell(ad.module_count)}` },
+          { title: 'Publish lại', detail: `Trạng thái sau cùng: ${normalizeCell(ad.course_after_publish?.visibility_status)}` },
+        ])}
+        ${renderBeforeAfterCard('Trạng thái khóa học', ad.course_after_block_attempt, ad.course_after_publish, ['Rule: không publish khóa học rỗng'])}
+      `;
+      break;
+    }
+    case 'enroll': {
+      const enrollment = ad.enrollment || firstChangedRow(before, after, 'course_enrollments');
+      const studentId = enrollment?.student_id || payloadValue(result, 'student_id', scenarioInputValue(el.enrollStudent));
+      const streakBefore = ad.streak_before || findByField(before, 'student_streaks', 'student_id', studentId);
+      const streakAfter = ad.streak_after || firstChangedRow(before, after, 'student_streaks', row => row.student_id === studentId) || findByField(after, 'student_streaks', 'student_id', studentId);
+      html = `
+        ${renderEventTimeline([
+          { title: 'Chọn học viên và khóa học', detail: 'Kiểm tra cả hai bản ghi tồn tại trong DB.' },
+          { title: 'CALL sp_enroll_student', detail: 'Procedure tạo enrollment nếu chưa có.' },
+          { title: 'Trigger cập nhật streak', detail: 'student_streaks phản ánh hoạt động học viên.' },
+        ])}
+        ${renderBeforeAfterCard('Enrollment', null, enrollment, [enrollment ? 'Có enrollment trong course_enrollments' : 'Procedure không tạo bản ghi trùng nếu đã enroll'])}
+        ${renderBeforeAfterCard('Streak học viên', streakBefore, streakAfter)}
+      `;
+      break;
+    }
+    case 'update_progress': {
+      const enrollment = ad.updated_enrollment || firstChangedRow(before, after, 'course_enrollments');
+      const notification = ad.latest_notification || firstChangedRow(before, after, 'notification_users');
+      html = `
+        <section class="demo-card-wide">
+          <div class="demo-section-title">Tiến độ sau khi cập nhật</div>
+          <div class="progress-visual"><span style="width:${Math.min(100, Number(enrollment?.progress || 0))}%"></span></div>
+          ${compactRow(enrollment)}
+        </section>
+        ${notification && Number(enrollment?.progress || 0) >= 100 ? renderBeforeAfterCard('Notification do trigger tạo', null, notification, ['Progress đạt 100%']) : '<div class="inline-empty">Chưa tạo notification hoàn thành vì progress chưa đạt 100%.</div>'}
+      `;
+      break;
+    }
+    case 'progress_comment': {
+      const comment = ad.inserted_comment || firstChangedRow(before, after, 'comments');
+      const notification = ad.latest_notification || firstChangedRow(before, after, 'notification_users');
+      html = `
+        ${renderEventTimeline([
+          { title: 'BEGIN', detail: 'Bắt đầu transaction nguyên tử.' },
+          { title: 'CALL sp_update_course_progress', detail: 'Cập nhật tiến độ học.' },
+          { title: 'INSERT comments', detail: 'Ghi bình luận trong cùng transaction.' },
+          { title: 'Trigger notification', detail: notification ? 'Có notification mới/hiện tại khi đạt điều kiện hoàn thành.' : 'Không tạo notification nếu chưa đủ điều kiện.' },
+          { title: 'COMMIT', detail: 'Hoàn tất nếu mọi bước thành công.' },
+        ])}
+        ${renderBeforeAfterCard('Bình luận mới', null, comment)}
+        ${renderBeforeAfterCard('Notification liên quan', null, notification)}
+      `;
+      break;
+    }
+    case 'transfer_to_admin': {
+      html = `
+        ${renderEventTimeline([
+          { title: 'Khóa ví nguồn và ví ADMIN', detail: 'Function dùng logic giao dịch để kiểm soát số dư.' },
+          { title: 'Trừ ví nguồn', detail: `Giảm ${normalizeCell(transferAmount(ad))}` },
+          { title: 'Cộng ví ADMIN', detail: `Trạng thái: ${normalizeCell(ad.transfer_result?.tx_status || ad.transaction_log?.status)}` },
+          { title: 'Ghi log', detail: `Action logs: ${(ad.tx_action_logs || []).length}` },
+        ])}
+        ${renderBeforeAfterCard('Ví nguồn', ad.from_wallet_before, ad.from_wallet_after)}
+        ${renderBeforeAfterCard('Ví ADMIN', ad.admin_wallet_before, ad.admin_wallet_after)}
+        ${renderMiniTable(ad.tx_action_logs || [], ['action_type', 'message', 'created_at'])}
+      `;
+      break;
+    }
+    case 'soft_delete_user': {
+      const afterUser = ad.user_after_soft_delete || firstChangedRow(before, after, 'users');
+      const beforeUser = ad.user_before_soft_delete || findByField(before, 'users', 'user_id', afterUser?.user_id);
+      html = `
+        ${renderBeforeAfterCard('User sau khi xóa mềm', beforeUser, afterUser, ['is_deleted chuyển sang TRUE', 'updated_at do trigger đổi'])}
+        <div class="demo-result-header"><span class="view-result-status">ẨN KHỎI SEARCH</span><span>fn_search_students không còn trả user đã xóa mềm.</span></div>
+      `;
+      break;
+    }
+    case 'soft_delete_course': {
+      const afterCourse = ad.course_after_soft_delete || firstChangedRow(before, after, 'general_courses');
+      const beforeCourse = ad.course_before_soft_delete || findByField(before, 'general_courses', 'course_id', afterCourse?.course_id);
+      html = `
+        ${renderBeforeAfterCard('Khóa học sau khi xóa mềm', beforeCourse, afterCourse, ['is_deleted chuyển sang TRUE', 'course bị ẩn logic'])}
+        <div class="demo-result-header"><span class="view-result-status">ẨN KHỎI SEARCH</span><span>fn_search_courses_advanced không còn trả khóa học đã xóa mềm.</span></div>
+      `;
+      break;
+    }
+    default:
+      html = '<div class="inline-empty">Kịch bản đã chạy xong. Xem thêm nhật ký SQL và bảng thay đổi kỹ thuật bên dưới.</div>';
+  }
+
+  node.innerHTML = `
+    <div class="demo-result-titleline"><span>Kết quả demo</span><strong>${esc(title)}</strong></div>
+    ${html}
+  `;
+}
+
 function buildSelect(selectEl, rows, valueFn, labelFn, blank) {
   if (!selectEl) return;
   selectEl.innerHTML = '';
   if (blank) {
     const o = document.createElement('option');
     o.value = '';
-    o.textContent = '— Tat ca —';
+    o.textContent = '— Tất cả —';
     selectEl.appendChild(o);
   }
 
@@ -497,6 +892,52 @@ function buildSelect(selectEl, rows, valueFn, labelFn, blank) {
     o.textContent = labelFn(row);
     selectEl.appendChild(o);
   }
+}
+
+function selectValueIfPresent(selectEl, value) {
+  if (!selectEl || !value) return;
+  const wanted = String(value);
+  for (const option of selectEl.options) {
+    if (option.value === wanted) {
+      selectEl.value = wanted;
+      return;
+    }
+  }
+}
+
+function attachSuggestionChips(inputEl, values) {
+  if (!inputEl || !Array.isArray(values) || values.length === 0) return;
+  let wrap = inputEl.parentElement.querySelector(`[data-suggestion-for="${inputEl.id}"]`);
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.className = 'suggestion-chips';
+    wrap.dataset.suggestionFor = inputEl.id;
+    inputEl.insertAdjacentElement('afterend', wrap);
+  }
+
+  const uniqueValues = [...new Set(values.map(v => String(v || '').trim()).filter(Boolean))].slice(0, 8);
+  wrap.innerHTML = uniqueValues
+    .map(value => `<button class="suggestion-chip" type="button" data-value="${esc(value)}">${esc(value)}</button>`)
+    .join('');
+  wrap.querySelectorAll('.suggestion-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      inputEl.value = btn.dataset.value || '';
+      inputEl.focus();
+    });
+  });
+}
+
+function buildStatusSelectFromSuggestions(selectEl, statuses) {
+  if (!selectEl || !Array.isArray(statuses) || statuses.length === 0) return;
+  const current = selectEl.value;
+  selectEl.innerHTML = '<option value="">Tất cả trạng thái</option>';
+  [...new Set(statuses.filter(Boolean))].forEach(status => {
+    const option = document.createElement('option');
+    option.value = status;
+    option.textContent = status;
+    selectEl.appendChild(option);
+  });
+  selectValueIfPresent(selectEl, current);
 }
 
 function collectPayload(action) {
@@ -514,6 +955,7 @@ function collectPayload(action) {
     case 'trigger_updated_at':
       return {
         user_id: el.tuUser.value,
+        // Frontend chi gui du lieu can sua, tuyet doi khong gui updated_at.
         new_username: el.tuUsername.value.trim(),
       };
     case 'trigger_init_streak':
@@ -555,6 +997,7 @@ function closeSSE() {
 function connectSSE(runId, scenario) {
   closeSSE();
   const relevantTables = SCENARIO_RELEVANT_TABLES[scenario] || [];
+  const pipe = scenarioPipeline(scenario);
 
   const src = new EventSource(`/api/runs/${runId}/events`);
   currentEventSrc = src;
@@ -562,14 +1005,14 @@ function connectSSE(runId, scenario) {
   src.addEventListener('run_started', e => {
     const d = JSON.parse(e.data);
     termSeparator();
-    termWrite(`[${ts()}] RUN STARTED action=${d.data.action}`, 'sql-ok');
+    termWrite(`[${ts()}] BẮT ĐẦU DEMO action=${d.data.action}`, 'sql-ok');
     termSeparator();
   });
 
   src.addEventListener('step_started', e => {
     const d = JSON.parse(e.data);
     const step = d.data;
-    updateStep(step.step_key, 'running', null, step.step_name);
+    updateStep(step.step_key, 'running', null, step.step_name, pipe.track, pipe.prefix);
     termWrite('', 'info');
     termWrite(`[${ts()}] > ${step.step_name}`, 'sql-string');
   });
@@ -595,15 +1038,15 @@ function connectSSE(runId, scenario) {
   src.addEventListener('step_finished', e => {
     const d = JSON.parse(e.data);
     const step = d.data;
-    updateStep(step.step_key, 'success', step.duration_ms, step.step_name);
-    termWrite(`   ✓ Done in ${step.duration_ms} ms`, 'sql-ok');
+    updateStep(step.step_key, 'success', step.duration_ms, step.step_name, pipe.track, pipe.prefix);
+    termWrite(`   ✓ Xong trong ${step.duration_ms} ms`, 'sql-ok');
   });
 
   src.addEventListener('step_failed', e => {
     const d = JSON.parse(e.data);
     const step = d.data;
-    updateStep(step.step_key, 'error', step.duration_ms, step.step_name);
-    termWrite(`   ✕ ERROR: ${step.error} (${step.duration_ms} ms)`, 'sql-error');
+    updateStep(step.step_key, 'error', step.duration_ms, step.step_name, pipe.track, pipe.prefix);
+    termWrite(`   ✕ LỖI: ${step.error} (${step.duration_ms} ms)`, 'sql-error');
   });
 
   src.addEventListener('run_finished', async e => {
@@ -614,12 +1057,13 @@ function connectSSE(runId, scenario) {
     termWrite(`[${ts()}] ${ok ? 'COMMIT' : 'ROLLBACK'} | ${d.data.message}`, ok ? 'sql-ok' : 'sql-error');
     termSeparator(ok ? '═' : '✕', ok ? 'sql-ok' : 'sql-error');
     closeSSE();
-    setRunStatus(ok ? 'Success' : 'Failed', ok ? 'success' : 'failed');
-    await loadResult(runId, relevantTables);
+    setRunStatus(ok ? 'Thành công' : 'Thất bại', ok ? 'success' : 'failed');
+    scheduleResultLoad(runId, relevantTables, scenario);
+    // Remove global delta open
   });
 
   src.onerror = () => {
-    termWrite(`[${ts()}] SSE disconnected.`, 'sql-error');
+    termWrite(`[${ts()}] Mất kết nối SSE.`, 'sql-error');
   };
 }
 
@@ -634,53 +1078,257 @@ function termRenderInlineTable(rows) {
   });
 }
 
-async function loadResult(runId, relevantTables) {
+async function detailRequest(url, options = {}) {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+  return data;
+}
+
+function detailLoading(id) {
+  const node = $(id);
+  if (node) node.innerHTML = '<div class="inline-empty">Đang tải...</div>';
+}
+
+function detailError(id, message) {
+  const node = $(id);
+  if (node) node.innerHTML = `<div class="inline-empty inline-error">${esc(message)}</div>`;
+}
+
+function detailRenderTable(id, columns, rows) {
+  const node = $(id);
+  if (!node) return;
+  if (!rows || rows.length === 0) {
+    node.innerHTML = '<div class="inline-empty">Không có dòng dữ liệu nào.</div>';
+    return;
+  }
+  node.innerHTML = `
+    <table class="inline-table">
+      <thead><tr>${columns.map(col => `<th>${esc(col)}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${rows.map(row => `
+          <tr>${columns.map(col => `<td>${esc(normalizeCell(row[col]))}</td>`).join('')}</tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function detailRenderViewResult(id, payload, label) {
+  const node = $(id);
+  if (!node) return;
+
+  const columns = payload.columns || [];
+  const rows = payload.rows || [];
+  const rowLabel = 'dòng';
+  const tableMarkup = rows.length === 0
+    ? '<div class="inline-empty">Không có dòng dữ liệu nào.</div>'
+    : `
+      <table class="inline-table view-result-table">
+        <thead><tr>${columns.map(col => `<th>${esc(col)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map(row => `
+            <tr>${columns.map(col => `<td>${esc(normalizeCell(row[col]))}</td>`).join('')}</tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+  node.innerHTML = `
+    <div class="view-result-shell">
+      <div class="view-result-topline">
+        <span class="view-result-status">ĐỌC VIEW OK</span>
+        <span class="view-result-count">${rows.length} ${rowLabel}</span>
+        <span class="view-result-count">${columns.length} cột</span>
+      </div>
+      <div class="view-result-title">${esc(label)}</div>
+      <div class="view-result-object">${esc(payload.view || '')}</div>
+      <div class="view-result-table-wrap">${tableMarkup}</div>
+    </div>
+  `;
+}
+
+function setViewButtonsDisabled(disabled) {
+  document.querySelectorAll('.btn-view-run').forEach(btn => {
+    btn.disabled = disabled;
+  });
+}
+
+async function loadDetailView(meta) {
+  closeSSE();
+  const viewTrack = el.viewPipelineTrack || el.pipelineTrack;
+  const viewPrefix = el.viewPipelineTrack ? 'view-' : '';
+  resetPipeline(viewTrack, viewPrefix);
+  termClear();
+  setRunStatus('Đang chạy view', 'running');
+  el.runId.textContent = 'view';
+  detailLoading(meta.targetId);
+  setViewButtonsDisabled(true);
+
+  let activeStep = 'validate_input';
+  const runStartedAt = performance.now();
   try {
-    const res = await fetch(`/api/runs/${runId}/result`);
-    const data = await res.json();
+    termWrite(`[${ts()}] VIEW RUN: ${meta.label}`, 'sql-ok');
+    updateStep('validate_input', 'running', null, 'Chuẩn bị câu SELECT', viewTrack, viewPrefix);
+    await pause(100);
+    updateStep('validate_input', 'success', 100, 'Chuẩn bị câu SELECT', viewTrack, viewPrefix);
+
+    activeStep = 'execute_procedure';
+    updateStep('execute_procedure', 'running', null, 'Chạy SELECT', viewTrack, viewPrefix);
+    meta.sqlLines.forEach(line => termWrite(`   ${line}`, classifyLine(line)));
+    const selectStartedAt = performance.now();
+    const data = await detailRequest(meta.endpoint);
+    if (!data.success) throw new Error(data.error || 'Request thất bại');
+    updateStep('execute_procedure', 'success', Math.round(performance.now() - selectStartedAt), 'Chạy SELECT', viewTrack, viewPrefix);
+
+    activeStep = 'check_trigger_side_effects';
+    updateStep('check_trigger_side_effects', 'running', null, 'Kiểm tra rowset', viewTrack, viewPrefix);
+    await pause(90);
+    updateStep('check_trigger_side_effects', 'success', 90, 'Kiểm tra rowset', viewTrack, viewPrefix);
+
+    activeStep = 'refresh_source_tables';
+    updateStep('refresh_source_tables', 'running', null, 'Ánh xạ cột kết quả', viewTrack, viewPrefix);
+    await pause(70);
+    updateStep('refresh_source_tables', 'success', 70, 'Ánh xạ cột kết quả', viewTrack, viewPrefix);
+
+    activeStep = 'refresh_reporting_views';
+    updateStep('refresh_reporting_views', 'running', null, 'Hiển thị kết quả', viewTrack, viewPrefix);
+    detailRenderViewResult(meta.targetId, data.data, meta.label);
+    updateStep('refresh_reporting_views', 'success', 30, 'Hiển thị kết quả', viewTrack, viewPrefix);
+
+    activeStep = 'complete';
+    updateStep('complete', 'success', Math.round(performance.now() - runStartedAt), 'Hoàn tất', viewTrack, viewPrefix);
+    setRunStatus('Thành công', 'success');
+    termWrite(`[${ts()}] ${data.data.view}: đã hiển thị ${data.data.rows.length} dòng.`, 'sql-ok');
+  } catch (err) {
+    updateStep(activeStep, 'error', null, activeStep === 'execute_procedure' ? 'Chạy SELECT' : 'Pipeline view', viewTrack, viewPrefix);
+    detailError(meta.targetId, err.message);
+    setRunStatus('Thất bại', 'failed');
+    termWrite(`[${ts()}] ${err.message}`, 'sql-error');
+  } finally {
+    setViewButtonsDisabled(false);
+  }
+}
+
+function initDetailDemos() {
+  const emptyTargets = [
+    ['detail-student-progress', 'Bấm “Chạy view này” để xem kết quả.'],
+    ['detail-course-analytics', 'Bấm “Chạy view này” để xem kết quả.'],
+    ['detail-top-learners', 'Bấm “Chạy view này” để xem kết quả.'],
+  ];
+  emptyTargets.forEach(([id, message]) => {
+    const node = $(id);
+    if (node) node.innerHTML = `<div class="inline-empty">${esc(message)}</div>`;
+  });
+  const actions = [
+    ['btn-detail-student-progress', () => loadDetailView(VIEW_DETAIL_RUNS.studentProgress)],
+    ['btn-detail-course-analytics', () => loadDetailView(VIEW_DETAIL_RUNS.courseAnalytics)],
+    ['btn-detail-top-learners', () => loadDetailView(VIEW_DETAIL_RUNS.topLearners)],
+  ];
+  actions.forEach(([id, handler]) => {
+    const node = $(id);
+    if (node) node.addEventListener('click', handler);
+  });
+
+}
+
+function activateViewPanel(key) {
+  const order = ['studentProgress', 'courseAnalytics', 'topLearners'];
+  const switcher = document.querySelector('.view-switcher');
+  if (switcher) switcher.style.setProperty('--active-index', String(Math.max(0, order.indexOf(key))));
+  document.querySelectorAll('.view-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.viewKey === key);
+  });
+  document.querySelectorAll('.view-detail-panel').forEach(panel => {
+    panel.classList.toggle('active', panel.dataset.viewPanel === key);
+  });
+  resetPipeline(el.viewPipelineTrack, 'view-');
+}
+
+function initViewSwitcher() {
+  document.querySelectorAll('.view-tab').forEach(btn => {
+    btn.addEventListener('click', () => activateViewPanel(btn.dataset.viewKey));
+  });
+  activateViewPanel('studentProgress');
+}
+
+async function loadResult(runId, relevantTables, scenario) {
+  try {
+    const scenarioNode = demoResultNode(scenario);
+    if (scenarioNode?.dataset.runId && scenarioNode.dataset.runId !== runId) return;
+    const data = await fetchRunResult(runId);
+    if (scenarioNode?.dataset.runId && scenarioNode.dataset.runId !== runId) return;
+    renderScenarioResult(scenario, data);
 
     const rel = relevantTables && relevantTables.length > 0 ? relevantTables : null;
-    renderDeltaDataset(el.tablesDelta, data.tables_before || {}, data.tables_after || {}, rel, { showSnapshotWhenNoChange: false });
-    renderDeltaDataset(el.viewsDelta, data.views_before || {}, data.views_after || {}, null, { showSnapshotWhenNoChange: true });
+    
+    let tableContainer = el.tablesDelta;
+    let viewContainer = el.viewsDelta;
+    
+    // Inline rendering
+    const shouldRenderTechnicalDelta = scenario && !['search_students', 'search_courses'].includes(scenario);
+    if (shouldRenderTechnicalDelta) {
+      const inlineContainer = document.getElementById(`delta-${scenario}`);
+      if (inlineContainer) {
+        inlineContainer.innerHTML = `
+          <div class="detail-compare-grid delta-inline-grid">
+            <div class="delta-col">
+              <h4>Thay đổi bảng nguồn</h4>
+              <div class="inline-tables-delta"></div>
+            </div>
+            <div class="delta-col">
+              <h4>Snapshot view báo cáo</h4>
+              <div class="inline-views-delta"></div>
+            </div>
+          </div>
+        `;
+        tableContainer = inlineContainer.querySelector('.inline-tables-delta');
+        viewContainer = inlineContainer.querySelector('.inline-views-delta');
+        inlineContainer.style.display = 'block';
+      }
+    }
+
+    if (tableContainer) renderDeltaDataset(tableContainer, data.tables_before || {}, data.tables_after || {}, rel, { showSnapshotWhenNoChange: false });
+    if (viewContainer) renderDeltaDataset(viewContainer, data.views_before || {}, data.views_after || {}, null, { showSnapshotWhenNoChange: true });
 
     renderSidebarMetrics(data.tables_after || data.tables_before, data.views_after || data.views_before);
 
     const ad = data.action_data || {};
     if (ad.search_students_rows && ad.search_students_rows.length > 0) {
       termWrite('', 'info');
-      termWrite(`── Ket qua fn_search_students: ${ad.search_students_rows.length} hang ──`, 'sql-string');
+      termWrite(`── Kết quả fn_search_students: ${ad.search_students_rows.length} dòng ──`, 'sql-string');
       termRenderInlineTable(ad.search_students_rows.slice(0, 8));
     }
 
     if (ad.search_courses_rows && ad.search_courses_rows.length > 0) {
       termWrite('', 'info');
-      termWrite(`── Ket qua fn_search_courses_advanced: ${ad.search_courses_rows.length} hang ──`, 'sql-string');
+      termWrite(`── Kết quả fn_search_courses_advanced: ${ad.search_courses_rows.length} dòng ──`, 'sql-string');
       termRenderInlineTable(ad.search_courses_rows.slice(0, 8));
     }
 
     if (ad.report_views) {
       termWrite('', 'info');
-      termWrite('── Ket qua 3 reporting views ──', 'sql-string');
+      termWrite('── Kết quả 3 reporting views ──', 'sql-string');
       Object.entries(ad.report_views).forEach(([viewName, rows]) => {
-        termWrite(`  ${viewName}: ${(rows || []).length} rows`, 'sql-comment');
+        termWrite(`  ${viewName}: ${(rows || []).length} dòng`, 'sql-comment');
       });
     }
 
     if (ad.user_after_update_timestamp) {
       termWrite('', 'info');
-      termWrite('── SESSION 1 result: Trigger updated_at ──', 'sql-string');
+      termWrite('── Kết quả: Trigger updated_at ──', 'sql-string');
       termRenderInlineTable([ad.user_after_update_timestamp]);
     }
 
     if (ad.streak_after_insert_student) {
       termWrite('', 'info');
-      termWrite('── SESSION 2 result: Trigger init streak ──', 'sql-string');
+      termWrite('── Kết quả: Trigger init streak ──', 'sql-string');
       termRenderInlineTable([ad.streak_after_insert_student]);
     }
 
     if (ad.course_after_publish) {
       termWrite('', 'info');
-      termWrite('── SESSION 3 result: Trigger publish guard ──', 'sql-string');
+      termWrite('── Kết quả: Trigger publish guard ──', 'sql-string');
       termRenderInlineTable([ad.course_after_publish]);
       if (ad.blocked_publish_error) {
         termWrite(`  blocked_error: ${String(ad.blocked_publish_error).slice(0, 220)}`, 'sql-comment');
@@ -689,7 +1337,7 @@ async function loadResult(runId, relevantTables) {
 
     if (ad.transfer_result) {
       termWrite('', 'info');
-      termWrite('── Transfer wallet result ──', 'sql-string');
+      termWrite('── Kết quả chuyển ví ──', 'sql-string');
       termRenderInlineTable([ad.transfer_result]);
       if (ad.transaction_log) {
         termWrite('  transaction_log:', 'sql-comment');
@@ -705,16 +1353,66 @@ async function loadResult(runId, relevantTables) {
       }
     }
   } catch (err) {
-    termWrite(`Loi tai ket qua: ${err.message}`, 'sql-error');
+    termWrite(`Lỗi tải kết quả: ${err.message}`, 'sql-error');
+    const node = demoResultNode(scenario);
+    if (node) {
+      node.innerHTML = `
+        <div class="demo-result-titleline"><span>Kết quả demo</span><strong>${esc(SCENARIO_LABELS[scenario] || scenario)}</strong></div>
+        <div class="inline-empty inline-error">Không tải được kết quả demo: ${esc(err.message)}</div>
+      `;
+    }
+  }
+}
+
+async function fetchRunResult(runId) {
+  let lastMessage = '';
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    let res;
+    let data = {};
+    try {
+      res = await fetchJsonWithTimeout(`/api/runs/${runId}/result?_=${Date.now()}`, 1800);
+      data = res.data;
+    } catch (err) {
+      lastMessage = err.message;
+      await pause(160);
+      continue;
+    }
+    if (res.status === 202 || data.status === 'running' || data.message === 'Run chưa hoàn tất.') {
+      lastMessage = data.message || 'Run chưa hoàn tất.';
+      await pause(180);
+      continue;
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.message || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+  throw new Error(lastMessage || 'Chưa tải được kết quả run.');
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function runScenario(action, scenario) {
   try {
-    setRunStatus('Starting...', 'running');
-    resetPipeline();
+    setRunStatus('Đang chuẩn bị...', 'running');
+    const pipe = scenarioPipeline(scenario);
+    resetPipeline(pipe.track, pipe.prefix);
+    const resultNode = demoResultNode(scenario);
+    if (resultNode) {
+      resultNode.innerHTML = '<div class="inline-empty">Đang chạy demo nghiệp vụ...</div>';
+    }
     termClear();
-    termWrite(`[${ts()}] Chuan bi: ${scenario}`, 'sql-comment');
+    termWrite(`[${ts()}] Chuẩn bị: ${SCENARIO_LABELS[scenario] || scenario}`, 'sql-comment');
 
     document.querySelectorAll('.btn-run').forEach(btn => {
       btn.disabled = true;
@@ -730,10 +1428,12 @@ async function runScenario(action, scenario) {
 
     currentRunId = data.run_id;
     el.runId.textContent = `${currentRunId.slice(0, 8)}...`;
-    setRunStatus('Running', 'running');
+    const activeResultNode = demoResultNode(scenario);
+    if (activeResultNode) activeResultNode.dataset.runId = currentRunId;
+    setRunStatus('Đang chạy', 'running');
     connectSSE(currentRunId, scenario);
   } catch (err) {
-    setRunStatus('Error', 'failed');
+    setRunStatus('Lỗi', 'failed');
     termWrite(`[${ts()}] ✕ ${err.message}`, 'sql-error');
   } finally {
     document.querySelectorAll('.btn-run').forEach(btn => {
@@ -744,9 +1444,9 @@ async function runScenario(action, scenario) {
 
 async function resetDb() {
   try {
-    setRunStatus('Resetting...', 'running');
+    setRunStatus('Đang khôi phục...', 'running');
     termClear();
-    termWrite(`[${ts()}] Reset DB - khoi phuc baseline...`, 'sql-txn');
+    termWrite(`[${ts()}] Reset DB - khôi phục baseline...`, 'sql-txn');
 
     const res = await fetch('/api/runs', {
       method: 'POST',
@@ -760,13 +1460,16 @@ async function resetDb() {
     el.runId.textContent = `${currentRunId.slice(0, 8)}...`;
     connectSSE(currentRunId, 'reset');
   } catch (err) {
-    setRunStatus('Error', 'failed');
-    termWrite(`Reset loi: ${err.message}`, 'sql-error');
+    setRunStatus('Lỗi', 'failed');
+    termWrite(`Reset lỗi: ${err.message}`, 'sql-error');
   }
 }
 
 function activateScenario(key) {
   activeScenario = key;
+  if (el.pipelineBar) {
+    el.pipelineBar.classList.add('hidden');
+  }
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.scenario === key);
   });
@@ -779,6 +1482,10 @@ function activateScenario(key) {
 
 async function init() {
   buildPipeline();
+  buildPipeline(el.viewPipelineTrack, 'view-');
+  if (el.pipelineBar) {
+    el.pipelineBar.classList.add('hidden');
+  }
 
   try {
     const res = await fetch('/api/init');
@@ -786,9 +1493,11 @@ async function init() {
     if (!res.ok) throw new Error(data.message || 'Init failed');
 
     setDbStatus(true);
+    demoSuggestions = data.demo_suggestions || {};
 
     const lk = data.lookups || {};
-    buildSelect(el.tuUser, lk.users || [], r => r.user_id, r => `${r.full_name} [${r.role_name}]${r.is_deleted ? ' xoa_mem' : ''}`);
+    buildSelect(el.tuUser, lk.users || [], r => r.user_id, r => `${r.full_name} [${r.role_name}]${r.is_deleted ? ' đã xóa mềm' : ''}`);
+    selectValueIfPresent(el.tuUser, demoSuggestions.default_user?.user_id);
     buildSelect(el.enrollStudent, lk.students || [], r => r.user_id, r => `${r.full_name} (${r.username})`);
     buildSelect(el.upStudent, lk.students || [], r => r.user_id, r => `${r.full_name} (${r.username})`);
     buildSelect(el.pcStudent, lk.students || [], r => r.user_id, r => `${r.full_name} (${r.username})`);
@@ -797,8 +1506,9 @@ async function init() {
     buildSelect(el.pcCourse, lk.courses || [], r => r.course_id, r => `${r.title} [${r.visibility_status}]`);
     buildSelect(el.sdcCourse, lk.courses || [], r => r.course_id, r => `${r.title} [${r.visibility_status}]`);
     buildSelect(el.pcLesson, lk.lessons || [], r => r.lesson_id, r => `${r.course_title} -> ${r.lesson_title}`);
-    buildSelect(el.sduUser, lk.users || [], r => r.user_id, r => `${r.full_name} [${r.role_name}]${r.is_deleted ? ' xoa_mem' : ''}`);
+    buildSelect(el.sduUser, lk.users || [], r => r.user_id, r => `${r.full_name} [${r.role_name}]${r.is_deleted ? ' đã xóa mềm' : ''}`);
     buildSelect(el.scCategory, lk.course_categories || [], r => r.category_id, r => r.name, true);
+    buildStatusSelectFromSuggestions(el.scStatus, demoSuggestions.course_statuses || []);
     buildSelect(
       el.txFromUser,
       lk.wallet_senders || [],
@@ -812,23 +1522,44 @@ async function init() {
       r => `${r.full_name} [ADMIN] - ${r.status} - balance=${r.balance}`
     );
     if (el.txAdminUser) el.txAdminUser.disabled = true;
+    selectValueIfPresent(el.sduUser, demoSuggestions.default_soft_delete_user?.user_id);
+    selectValueIfPresent(el.sdcCourse, demoSuggestions.default_soft_delete_course?.course_id);
+    selectValueIfPresent(el.txFromUser, demoSuggestions.default_wallet_sender?.user_id);
+    selectValueIfPresent(el.txAdminUser, demoSuggestions.default_admin_wallet?.user_id);
+    const defaultEnrollment = (demoSuggestions.enrollment_pairs || [])[0] || {};
+    selectValueIfPresent(el.enrollStudent, demoSuggestions.default_student?.user_id);
+    selectValueIfPresent(el.enrollCourse, demoSuggestions.default_course?.course_id);
+    selectValueIfPresent(el.upStudent, defaultEnrollment.student_id || demoSuggestions.default_student?.user_id);
+    selectValueIfPresent(el.upCourse, defaultEnrollment.course_id || demoSuggestions.default_course?.course_id);
+    selectValueIfPresent(el.pcStudent, defaultEnrollment.student_id || demoSuggestions.default_student?.user_id);
+    selectValueIfPresent(el.pcCourse, defaultEnrollment.course_id || demoSuggestions.default_course?.course_id);
+    attachSuggestionChips(el.ssKeyword, demoSuggestions.student_keywords || []);
+    attachSuggestionChips(el.scKeyword, demoSuggestions.course_keywords || []);
+    if (el.ssKeyword && (demoSuggestions.student_keywords || []).length) {
+      el.ssKeyword.placeholder = `Ví dụ: ${demoSuggestions.student_keywords[0]}`;
+    }
+    if (el.scKeyword && (demoSuggestions.course_keywords || []).length) {
+      el.scKeyword.placeholder = `Ví dụ: ${demoSuggestions.course_keywords[0]}`;
+    }
 
-    renderSnapshotDataset(el.tablesDelta, data.tables || {}, null);
-    renderSnapshotDataset(el.viewsDelta, data.views || {}, null);
+    // Removed global snapshot rendering
     renderSidebarMetrics(data.tables, data.views);
 
-    setRunStatus('Idle', 'idle');
-    termWrite(`[${ts()}] Ket noi PostgreSQL thanh cong.`, 'sql-ok');
-    termWrite(`[${ts()}] Chon kich ban ben trai va bam Chay.`, 'sql-comment');
+    setRunStatus('Sẵn sàng', 'idle');
+    termWrite(`[${ts()}] PostgreSQL đã sẵn sàng.`, 'sql-ok');
+    termWrite(`[${ts()}] Chọn kịch bản và chạy demo.`, 'sql-comment');
   } catch (err) {
     setDbStatus(false);
-    setRunStatus('Error', 'failed');
-    termWrite(`[${ts()}] Khong the ket noi DB: ${err.message}`, 'sql-error');
+    setRunStatus('Lỗi', 'failed');
+    termWrite(`[${ts()}] Không thể kết nối DB: ${err.message}`, 'sql-error');
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  ensureScenarioDemoAreas();
   init();
+  initDetailDemos();
+  initViewSwitcher();
 
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => activateScenario(btn.dataset.scenario));
@@ -849,7 +1580,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
       termClear();
-      termWrite(`[${ts()}] Terminal cleared.`, 'info');
+      termWrite(`[${ts()}] Đã xóa nhật ký SQL.`, 'info');
     });
   }
 });
