@@ -95,24 +95,6 @@
         <span class="nav-tag tag-proc">TRG</span>
       </button>
 
-      <button class="nav-item" data-scenario="search_students">
-        <span class="nav-icon icon-fn">&#402;</span>
-        <div class="nav-text">
-          <span class="nav-name">Tìm học viên</span>
-          <span class="nav-hint">fn_search_students</span>
-        </div>
-        <span class="nav-tag tag-fn">FUNC</span>
-      </button>
-
-      <button class="nav-item" data-scenario="search_courses">
-        <span class="nav-icon icon-fn">&#402;</span>
-        <div class="nav-text">
-          <span class="nav-name">Tìm khóa học</span>
-          <span class="nav-hint">lọc nâng cao</span>
-        </div>
-        <span class="nav-tag tag-fn">FUNC</span>
-      </button>
-
       <button class="nav-item" data-scenario="enroll">
         <span class="nav-icon icon-proc">&#9672;</span>
         <div class="nav-text">
@@ -131,14 +113,7 @@
         <span class="nav-tag tag-proc">PROC</span>
       </button>
 
-      <button class="nav-item" data-scenario="progress_comment">
-        <span class="nav-icon icon-txn">&#8605;</span>
-        <div class="nav-text">
-          <span class="nav-name">Progress + Comment</span>
-          <span class="nav-hint">CALL + INSERT</span>
-        </div>
-        <span class="nav-tag tag-txn">TXN</span>
-      </button>
+
 
       <button class="nav-item" data-scenario="transfer_to_admin">
         <span class="nav-icon icon-txn">&#8605;</span>
@@ -180,7 +155,7 @@
         <p>Chọn kịch bản bên trái → bấm chạy → quan sát sự kiện nghiệp vụ, SQL thực thi và dữ liệu thay đổi trực tiếp.</p>
       </div>
       <div class="hero-stats">
-        <div><strong>12</strong><span>kịch bản</span></div>
+        <div><strong>9</strong><span>kịch bản</span></div>
         <div><strong>4</strong><span>loại SQL</span></div>
         <div><strong>SSE</strong><span>thời gian thực</span></div>
       </div>
@@ -452,48 +427,7 @@ CREATE TRIGGER trg_before_publish_course
           </div>
         </div>
 
-        <div class="scenario-panel" id="panel-search_students">
-          <div class="panel-header">
-            <div class="panel-title-group">
-              <span class="panel-badge badge-fn">FUNCTION</span>
-              <h2>fn_search_students</h2>
-            </div>
-            <p class="panel-desc">Tìm học viên theo username, họ tên hoặc trường học. Function tự lọc bản ghi đã xóa mềm.</p>
-            <div class="panel-inputs">
-              <label class="input-label">Từ khóa</label>
-              <input class="styled-input" id="ss-keyword" type="text" placeholder="minh, Le Minh, THCS...">
-            </div>
-            <div class="panel-actions">
-              <button class="btn-run" data-action="search_students" data-scenario="search_students">Chạy function</button>
-            </div>
-          </div>
-        </div>
 
-        <div class="scenario-panel" id="panel-search_courses">
-          <div class="panel-header">
-            <div class="panel-title-group">
-              <span class="panel-badge badge-fn">FUNCTION</span>
-              <h2>fn_search_courses_advanced</h2>
-            </div>
-            <p class="panel-desc">Tìm khóa học theo từ khóa, danh mục và trạng thái. Function JOIN metadata khóa học và tổng hợp tiến độ học viên.</p>
-            <div class="panel-inputs">
-              <label class="input-label">Từ khóa</label>
-              <input class="styled-input" id="sc-keyword" type="text" placeholder="communication">
-              <label class="input-label">Danh mục</label>
-              <select class="styled-input" id="sc-category"><option value="">Tất cả danh mục</option></select>
-              <label class="input-label">Trạng thái</label>
-              <select class="styled-input" id="sc-status">
-                <option value="">Tất cả trạng thái</option>
-                <option value="DRAFT">DRAFT</option>
-                <option value="PUBLISHED">PUBLISHED</option>
-                <option value="ARCHIVED">ARCHIVED</option>
-              </select>
-            </div>
-            <div class="panel-actions">
-              <button class="btn-run" data-action="search_courses" data-scenario="search_courses">Chạy function</button>
-            </div>
-          </div>
-        </div>
 
         <div class="scenario-panel" id="panel-enroll">
           <div class="panel-header">
@@ -539,32 +473,7 @@ CREATE TRIGGER trg_before_publish_course
           </div>
         </div>
 
-        <div class="scenario-panel" id="panel-progress_comment">
-          <div class="panel-header">
-            <div class="panel-title-group">
-              <span class="panel-badge badge-txn">TRANSACTION</span>
-              <h2>Transaction cập nhật tiến độ + bình luận</h2>
-            </div>
-            <p class="panel-desc">Chạy một transaction đầy đủ: validate, gọi procedure cập nhật tiến độ, insert bình luận, kiểm tra trigger rồi commit hoặc rollback.</p>
-            <div class="trigger-badge-row"><span class="trigger-badge txn-flow">BEGIN -> CALL -> INSERT comments -> COMMIT</span></div>
-            <div class="panel-inputs">
-              <label class="input-label">Học viên</label>
-              <select class="styled-input" id="pc-student"></select>
-              <label class="input-label">Khóa học</label>
-              <select class="styled-input" id="pc-course"></select>
-              <label class="input-label">Bài học</label>
-              <select class="styled-input" id="pc-lesson"></select>
-              <label class="input-label">Tiến độ (%)</label>
-              <input class="styled-input" id="pc-progress" type="number" min="0" max="100" step="0.01" value="100">
-              <label class="input-label">Bình luận</label>
-              <textarea class="styled-input styled-textarea" id="pc-comment" rows="2">Đã hoàn thành bài học và cần bài luyện tập nâng cao.</textarea>
-            </div>
-            <div class="panel-actions">
-              <button class="btn-run" data-action="progress_comment" data-scenario="progress_comment">Chạy transaction</button>
-            </div>
-            <div class="scenario-delta" id="delta-progress_comment"></div>
-          </div>
-        </div>
+
 
         <div class="scenario-panel" id="panel-transfer_to_admin">
           <div class="panel-header">
